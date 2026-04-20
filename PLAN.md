@@ -409,59 +409,65 @@ lighthouserc.js
 
 ## 完整 Checklist 總覽
 
-| # | Phase | 項目 | 執行方式 |
-|---|-------|------|---------|
-| 1 | 1a | `create-next-app` 初始化 | 🤖 |
-| 2 | 1a | 安裝 `contentlayer2 next-contentlayer2` + runtime 依賴 | 🤖 |
-| 3 | 1a | 安裝 `rehype-pretty-code shiki`（dev） | 🤖 |
-| 4 | 1a | 安裝 `@playwright/test @axe-core/playwright @lhci/cli` | 🤖 |
-| 5 | 1a | `shadcn/ui init` + badge, button, card, separator, sheet | 🤖 |
-| 6 | 1a | `playwright.config.ts` + `lighthouserc.js` 設定 | 🤖 |
-| 7 | 1a | `tailwind.config.ts`：darkMode + `.contentlayer/generated` 路徑 | 🤖 |
-| 8 | 1a | `tsconfig.json`：`contentlayer/generated` path alias | 🤖 |
-| 9 | 1a | `next.config.ts`：`withContentlayer()` + CSP headers | 🤖 |
-| 10 | 1a | `contentlayer.config.ts`：Post + Project schema + rehype-pretty-code | 🤖 |
-| 11 | 1a | 建立 `content/` 目錄結構 + `.gitkeep` | 🤖 |
-| 12 | 1a | `.env.example` + `.gitignore` 更新 | 🤖 |
-| 13 | 1a | 假 MDX 驗證 Contentlayer 解析，`pnpm build` 無 error | 🤖 |
-| 14 | 1b | `ThemeProvider.tsx` | 🤖 |
-| 15 | 1b | `layout.tsx`：ThemeProvider + `suppressHydrationWarning` | 🤖 |
-| 16 | 1b | `Navbar.tsx`：desktop nav + mobile Sheet + active link | 🤖 |
-| 17 | 1b | `Footer.tsx`：icon links + copyright | 🤖 |
-| 18 | 1b | `tests/layout.spec.ts` | 🤖 |
-| 19 | 1c | `HeroSection.tsx` | 🤖 |
-| 20 | 1c | `ProjectCard.tsx`（可複用） | 🤖 |
-| 21 | 1c | `PostCard.tsx`（可複用） | 🤖 |
-| 22 | 1c | `page.tsx`（Home）：empty state 正確 | 🤖 |
-| 23 | 1c | `tests/home.spec.ts` | 🤖 |
-| 24 | 1d | `about/page.tsx`：Bio + Tech badges + Contact | 🤖 |
-| 25 | 1d | `tests/about.spec.ts` | 🤖 |
-| 26 | 1e | Push to GitHub + Vercel deploy | 👁 |
-| 27 | 1e | 確認 Vercel build log `Generated X documents` | 👁 |
-| 28 | 1e | `pnpm test` 全部通過 | 🤖 |
-| 29 | 2a | 3 個 project MDX skeleton | 🤖 |
-| 30 | 2a | `MDXContent.tsx`（`'use client'`） | 🤖 |
-| 31 | 2a | `projects/page.tsx` grid | 🤖 |
-| 32 | 2a | `projects/[slug]/page.tsx`（過濾 draft） | 🤖 |
-| 33 | 2a | AI News Radar MDX：架構圖 + 截圖 + code snippet | 🤖 |
-| 34 | 2a | `tests/projects.spec.ts` + 靜態分析 img tag | 🤖 |
-| 35 | 2b | `blog/page.tsx` + empty state | 🤖 |
-| 36 | 2b | `blog/[slug]/page.tsx`（非 draft only） | 🤖 |
-| 37 | 2b | `tests/blog.spec.ts` | 🤖 |
-| 38 | 3 | Framer Motion：`LazyMotion + fadeInUp` | 🤖 |
-| 39 | 3 | SEO：global metadata + 各頁 `generateMetadata` | 🤖 |
-| 40 | 3 | `og-image.png` 手動製作 | 👁 |
-| 41 | 3 | `robots.ts` + `sitemap.ts` | 🤖 |
-| 42 | 3 | `tests/seo.spec.ts` | 🤖 |
-| 43 | 3 | `tests/responsive.spec.ts`（375 / 768 / 1280px） | 🤖 |
-| 44 | 3 | `tests/a11y.spec.ts`（axe-core 全頁） | 🤖 |
-| 45 | 3 | 真實手機目視確認 | 👁 |
-| 46 | 3 | `npm audit --audit-level=high` | 🤖 |
-| 47 | 3 | 靜態分析：無原生 `<img>` tag | 🤖 |
-| 48 | 3 | Lighthouse CI（`pnpm lhci autorun`） | 🤖 |
-| 49 | 3 | OG image 視覺確認 | 👁 |
+> 最後更新：2026-04-20　進度：Phase 1a–2b 完成，Phase 3 待執行
 
-**自動化：45/49 項 🤖　人工：4/49 項 👁**
+| # | Phase | 項目 | 執行方式 | 狀態 |
+|---|-------|------|---------|------|
+| 1 | 1a | `create-next-app` 初始化 | 🤖 | ✅ |
+| 2 | 1a | 安裝 `contentlayer2 next-contentlayer2` + runtime 依賴 | 🤖 | ✅ |
+| 3 | 1a | 安裝 `rehype-pretty-code shiki`（dev） | 🤖 | ✅ |
+| 4 | 1a | 安裝 `@playwright/test @axe-core/playwright @lhci/cli` | 🤖 | ✅ |
+| 5 | 1a | shadcn/ui：Radix-based components（badge, button, card, separator, sheet） | 🤖 | ✅ |
+| 6 | 1a | `playwright.config.ts` + `lighthouserc.js` 設定 | 🤖 | ✅ |
+| 7 | 1a | `tailwind.config.ts`：darkMode + contentlayer 路徑 + HSL color tokens | 🤖 | ✅ |
+| 8 | 1a | `tsconfig.json`：`contentlayer/generated` path alias | 🤖 | ✅ |
+| 9 | 1a | `next.config.mjs`：`withContentlayer()` + CSP headers | 🤖 | ✅ |
+| 10 | 1a | `contentlayer.config.ts`：Post + Project schema + rehype-pretty-code | 🤖 | ✅ |
+| 11 | 1a | 建立 `content/` 目錄結構 + `.gitkeep` | 🤖 | ✅ |
+| 12 | 1a | `.env.example` + `.gitignore` 更新 | 🤖 | ✅ |
+| 13 | 1a | 假 MDX 驗證 Contentlayer 解析，build 無 error | 🤖 | ✅ |
+| 14 | 1b | `ThemeProvider.tsx` | 🤖 | ✅ |
+| 15 | 1b | `layout.tsx`：ThemeProvider + `suppressHydrationWarning` + Inter/JetBrains Mono | 🤖 | ✅ |
+| 16 | 1b | `Navbar.tsx`：desktop nav + mobile Sheet + active link | 🤖 | ✅ |
+| 17 | 1b | `Footer.tsx`：GitHub SVG icon + Email icon + copyright | 🤖 | ✅ |
+| 18 | 1b | `tests/layout.spec.ts` | 🤖 | ✅ |
+| 19 | 1c | `HeroSection.tsx` | 🤖 | ✅ |
+| 20 | 1c | `ProjectCard.tsx`（可複用） | 🤖 | ✅ |
+| 21 | 1c | `PostCard.tsx`（可複用） | 🤖 | ✅ |
+| 22 | 1c | `page.tsx`（Home）：empty state 正確 | 🤖 | ✅ |
+| 23 | 1c | `tests/home.spec.ts` | 🤖 | ✅ |
+| 24 | 1d | `about/page.tsx`：Bio + Tech badges + Contact | 🤖 | ✅ |
+| 25 | 1d | `tests/about.spec.ts` | 🤖 | ✅ |
+| 26 | 1e | Push to GitHub（public） | 👁 | ✅ |
+| 27 | 1e | Vercel deploy | 👁 | ⬜ |
+| 28 | 1e | `npm test` 全部通過 | 🤖 | ⬜ |
+| 29 | 2a | 2 個 project MDX（ai-news-radar, linebot）| 🤖 | ✅ |
+| 30 | 2a | `MDXContent.tsx`（`'use client'`） | 🤖 | ✅ |
+| 31 | 2a | `projects/page.tsx` grid | 🤖 | ✅ |
+| 32 | 2a | `projects/[slug]/page.tsx`（過濾 draft） | 🤖 | ✅ |
+| 33 | 2a | `tests/projects.spec.ts` + 靜態分析 img tag | 🤖 | ✅ |
+| 34 | 2b | `blog/page.tsx` + empty state | 🤖 | ✅ |
+| 35 | 2b | `blog/[slug]/page.tsx`（非 draft only） | 🤖 | ✅ |
+| 36 | 2b | `tests/blog.spec.ts` | 🤖 | ✅ |
+| 37 | 2b | `robots.ts` + `sitemap.ts` | 🤖 | ✅ |
+| 38 | 3 | Framer Motion：`LazyMotion + fadeInUp` | 🤖 | ⬜ |
+| 39 | 3 | SEO：各頁 `generateMetadata` | 🤖 | ✅ |
+| 40 | 3 | `og-image.png` 手動製作 | 👁 | ⬜ |
+| 41 | 3 | `tests/seo.spec.ts` | 🤖 | ✅ |
+| 42 | 3 | `tests/responsive.spec.ts`（375 / 768 / 1280px） | 🤖 | ✅ |
+| 43 | 3 | `tests/a11y.spec.ts`（axe-core 全頁） | 🤖 | ✅ |
+| 44 | 3 | 真實手機目視確認 | 👁 | ⬜ |
+| 45 | 3 | `npm audit --audit-level=high` | 🤖 | ⬜ |
+| 46 | 3 | 靜態分析：無原生 `<img>` tag | 🤖 | ✅ |
+| 47 | 3 | Lighthouse CI（`npm run lhci`） | 🤖 | ⬜ |
+| 48 | 3 | OG image 視覺確認 | 👁 | ⬜ |
+
+**決策記錄：**
+- Photo Album App 從 projects 移除（2026-04-20）— 為 speckit 工具的 sample project，非原創作品
+- shadcn v4 base-nova 不相容 Tailwind v3，改用 Radix UI 手動建立元件
+- lucide-react 已移除 Github brand icon，改用內嵌 SVG
+
+**完成：37/48 項 ✅　待執行：11/48 項 ⬜**
 
 ---
 
