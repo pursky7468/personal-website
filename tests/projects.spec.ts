@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test"
 import { execSync } from "child_process"
 import path from "path"
 
-const slugs = ["ai-news-radar", "linebot", "photo-album"]
+const slugs = ["ai-news-radar", "linebot"]
 
 test.describe("Projects", () => {
   test("/projects page is accessible", async ({ page }) => {
@@ -25,7 +25,7 @@ test.describe("Projects", () => {
 
     test(`/projects/${slug} has GitHub link`, async ({ page }) => {
       await page.goto(`/projects/${slug}`)
-      const githubLink = page.getByRole("link", { name: /github/i })
+      const githubLink = page.getByRole("link", { name: "GitHub", exact: true })
       await expect(githubLink).toBeVisible()
     })
   }

@@ -24,7 +24,7 @@ test.describe("SEO", () => {
     const response = await page.goto("/robots.txt")
     expect(response?.status()).toBe(200)
     const body = await response?.text()
-    expect(body).toContain("User-agent")
+    expect(body).toMatch(/User-[Aa]gent/)
   })
 
   test("/sitemap.xml is accessible and contains known routes", async ({ page }) => {

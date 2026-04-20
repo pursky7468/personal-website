@@ -15,8 +15,12 @@ test.describe("Layout", () => {
   }
 
   test("Dark mode toggle changes html class and persists on reload", async ({ page }) => {
+    // Force light mode via localStorage, then toggle to dark and verify persistence
     await page.goto("/")
-    await page.getByRole("button", { name: "Toggle theme" }).click()
+    await page.evaluate(() => localStorage.setItem("theme", "light"))
+    await page.reload()
+    await expect(page.locator("html")).not.toHaveClass(/dark/)
+    await page.getByRole("button", { name: "Toggle theme" }).first().click()
     await expect(page.locator("html")).toHaveClass(/dark/)
     await page.reload()
     await expect(page.locator("html")).toHaveClass(/dark/)
