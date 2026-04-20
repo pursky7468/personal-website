@@ -1,0 +1,55 @@
+---
+title: AI News Radar
+description: A self-hosted AI news aggregator with multi-source fetching, relevance scoring, LLM-powered daily briefings, and a custom Claude MCP server.
+date: 2026-01-15
+tags: [Python, FastAPI, Next.js, PostgreSQL, Claude, MCP, AI]
+github: https://github.com/pursky7468/x-ai-news-researcher
+featured: true
+draft: false
+---
+
+## What it does
+
+- Fetches AI news from 4 sources: Hacker News (Algolia API), ArXiv (Atom RSS), GitHub (REST API), Reddit
+- Scores articles using a keyword-weighted relevance system (no TF-IDF, no ML model)
+- Generates daily Traditional Chinese briefings via Groq/Gemini LLM
+- Exposes a custom **MCP server** with 7 tools so Claude can query the personal news database directly in conversation
+- Hybrid search: FTS5 full-text search + semantic similarity (numpy in-memory, no separate vector DB)
+
+## Architecture
+
+```
+Fetch → Score → Store → Summarize → Serve
+  ↓        ↓       ↓        ↓          ↓
+HN/ArXiv  Keyword  SQLite  LLM brief  FastAPI
+GitHub    weights  + FTS5  (Groq/     REST API
+Reddit            + embed  Gemini)    MCP server
+```
+
+## Key Technical Decisions
+
+### Custom keyword scoring instead of TF-IDF
+
+The domain is narrow (AI news) and the vocabulary is well-known in advance. A weighted keyword system is faster, more interpretable, and easier to tune than TF-IDF. Threshold at 5.0; anything below gets filtered.
+
+### Hybrid FTS5 + semantic search
+
+SQLite's FTS5 handles exact keyword matching well. For conceptual similarity, sentence-transformers generates embeddings stored as BLOBs. At query time, both scores are combined via reciprocal rank fusion. No separate vector database needed for under 50k articles.
+
+### Claude MCP integration
+
+Rather than copy-pasting article content into Claude's context, I built a local MCP server with 7 tools (search, daily report, trending topics, weekly summary, etc.). Claude connects to it directly and queries the database on demand. This keeps context clean and makes the data immediately accessible.
+
+### Async background jobs (APScheduler + 202 pattern)
+
+Digest generation is slow (LLM calls + DB writes). The `POST /digest/trigger` endpoint immediately returns `202 Accepted` with a `job_id`. The client polls `GET /digest/status/{job_id}`. This avoids HTTP timeouts and makes the UI feel responsive.
+
+## Screenshots
+
+*(Local deployment — not publicly hosted)*
+
+## Lessons Learned
+
+- **Scraping Reddit has ToS risk.** The other 3 sources (HN Algolia, ArXiv, GitHub) are safe. For public deployment, Reddit would need to be dropped or replaced.
+- **Contentlayer + Contentlayer2 naming confusion.** The original `contentlayer` package is abandoned. Always use `contentlayer2`.
+- **In-memory semantic search doesn't scale beyond ~50k docs.** For larger datasets, a proper vector DB (Qdrant, Chroma) would be needed.

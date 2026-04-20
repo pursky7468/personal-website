@@ -34,3 +34,17 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+
+# Contentlayer
+.contentlayer
+
+# Contentlayer
+.contentlayer
+
+# Lighthouse CI
+.lighthouseci
+
+# Playwright
+playwright-report
+test-results

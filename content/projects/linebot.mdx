@@ -1,0 +1,29 @@
+---
+title: LINE Bot Outfit Recommender
+description: A LINE Bot that suggests daily outfits based on real-time weather and your personal wardrobe, built with .NET 8.
+date: 2025-10-01
+tags: [.NET 8, C#, LINE Bot, OpenWeatherMap, SQL]
+github: https://github.com/pursky7468/LineBot.ClothingRecommendation
+featured: true
+draft: false
+---
+
+## What it does
+
+- Users register and manage a personal wardrobe through LINE chat
+- The bot fetches real-time weather from OpenWeatherMap API
+- Recommends outfit combinations appropriate for the weather and occasion
+- 132 passing tests, 100% code coverage
+
+## Architecture
+
+Clean architecture in 3 layers: Presentation (LINE webhook handler), Application (recommendation logic), Domain (wardrobe + weather models).
+
+## Key Technical Decision
+
+Kept the LLM out of the recommendation loop. The suggestion algorithm is deterministic and rule-based, which makes it testable and predictable. Adding an LLM would require mocking the external call in tests and introduces non-determinism.
+
+## Lessons Learned
+
+- 100% coverage is achievable but not always worth the effort — the last 5% of coverage often tests framework glue code, not business logic.
+- LINE's webhook verification (HMAC-SHA256) needs to be handled before any business logic runs.
