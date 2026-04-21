@@ -3,12 +3,12 @@ module.exports = {
   ci: {
     collect: {
       url: [
-        'http://localhost:3000',
-        'http://localhost:3000/projects',
-        'http://localhost:3000/blog',
-        'http://localhost:3000/about',
+        'http://localhost:3001',
+        'http://localhost:3001/projects',
+        'http://localhost:3001/blog',
+        'http://localhost:3001/about',
       ],
-      startServerCommand: 'npm run start',
+      startServerCommand: 'next start -p 3001',
       startServerReadyPattern: 'ready',
       numberOfRuns: 1,
     },

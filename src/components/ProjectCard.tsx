@@ -32,7 +32,8 @@ export function ProjectCard({ title, description, tags, slug, github }: ProjectC
             href={`/projects/${slug}`}
             className="flex items-center gap-1 text-sm text-primary hover:underline"
           >
-            Read more <ArrowRight className="h-3 w-3" />
+            Read more<span className="sr-only"> about {title}</span>
+            <ArrowRight className="h-3 w-3" aria-hidden="true" />
           </Link>
           {github && (
             <a
