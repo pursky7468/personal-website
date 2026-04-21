@@ -452,14 +452,14 @@ lighthouserc.js
 | 37 | 2b | `robots.ts` + `sitemap.ts` | 🤖 | ✅ |
 | 38 | 3 | Framer Motion：`LazyMotion + fadeInUp` | 🤖 | ✅ |
 | 39 | 3 | SEO：各頁 `generateMetadata` | 🤖 | ✅ |
-| 40 | 3 | `og-image.png` 手動製作 | 👁 | ⬜ |
+| 40 | 3 | OG image（Next.js edge ImageResponse，自動生成） | 🤖 | ✅ |
 | 41 | 3 | `tests/seo.spec.ts` | 🤖 | ✅ |
 | 42 | 3 | `tests/responsive.spec.ts`（375 / 768 / 1280px） | 🤖 | ✅ |
 | 43 | 3 | `tests/a11y.spec.ts`（axe-core 全頁） | 🤖 | ✅ |
 | 44 | 3 | 真實手機目視確認 | 👁 | ⬜ |
 | 45 | 3 | `npm audit --audit-level=high` | 🤖 | ⚠️ Next.js 14 CVEs（需升至 16.x 修復，breaking change） |
 | 46 | 3 | 靜態分析：無原生 `<img>` tag | 🤖 | ✅ |
-| 47 | 3 | Lighthouse CI（`npm run lhci`） | 🤖 | ⬜ |
+| 47 | 3 | Lighthouse CI（`npm run lhci`） | 🤖 | ✅ Perf ≥0.96 / A11y ≥0.98 / SEO =1.0 |
 | 48 | 3 | OG image 視覺確認 | 👁 | ⬜ |
 
 **決策記錄：**
@@ -467,7 +467,7 @@ lighthouserc.js
 - shadcn v4 base-nova 不相容 Tailwind v3，改用 Radix UI 手動建立元件
 - lucide-react 已移除 Github brand icon，改用內嵌 SVG
 
-**完成：43/48 項 ✅　待執行/觀察：5/48 項 ⬜⚠️**
+**完成：46/48 項 ✅　待執行/觀察：2/48 項 ⬜⚠️**
 
 **已部署：** https://personal-website-pursky7468s-projects.vercel.app
 
