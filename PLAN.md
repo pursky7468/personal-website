@@ -409,7 +409,7 @@ lighthouserc.js
 
 ## 完整 Checklist 總覽
 
-> 最後更新：2026-04-20　進度：Phase 1a–2b 完成，Phase 3 待執行
+> 最後更新：2026-04-20　進度：Phase 1a–3 完成（43/43 tests passing），已部署 Vercel
 
 | # | Phase | 項目 | 執行方式 | 狀態 |
 |---|-------|------|---------|------|
@@ -439,8 +439,8 @@ lighthouserc.js
 | 24 | 1d | `about/page.tsx`：Bio + Tech badges + Contact | 🤖 | ✅ |
 | 25 | 1d | `tests/about.spec.ts` | 🤖 | ✅ |
 | 26 | 1e | Push to GitHub（public） | 👁 | ✅ |
-| 27 | 1e | Vercel deploy | 👁 | ⬜ |
-| 28 | 1e | `npm test` 全部通過 | 🤖 | ⬜ |
+| 27 | 1e | Vercel deploy | 👁 | ✅ |
+| 28 | 1e | `npm test` 全部通過（43/43） | 🤖 | ✅ |
 | 29 | 2a | 2 個 project MDX（ai-news-radar, linebot）| 🤖 | ✅ |
 | 30 | 2a | `MDXContent.tsx`（`'use client'`） | 🤖 | ✅ |
 | 31 | 2a | `projects/page.tsx` grid | 🤖 | ✅ |
@@ -450,14 +450,14 @@ lighthouserc.js
 | 35 | 2b | `blog/[slug]/page.tsx`（非 draft only） | 🤖 | ✅ |
 | 36 | 2b | `tests/blog.spec.ts` | 🤖 | ✅ |
 | 37 | 2b | `robots.ts` + `sitemap.ts` | 🤖 | ✅ |
-| 38 | 3 | Framer Motion：`LazyMotion + fadeInUp` | 🤖 | ⬜ |
+| 38 | 3 | Framer Motion：`LazyMotion + fadeInUp` | 🤖 | ✅ |
 | 39 | 3 | SEO：各頁 `generateMetadata` | 🤖 | ✅ |
 | 40 | 3 | `og-image.png` 手動製作 | 👁 | ⬜ |
 | 41 | 3 | `tests/seo.spec.ts` | 🤖 | ✅ |
 | 42 | 3 | `tests/responsive.spec.ts`（375 / 768 / 1280px） | 🤖 | ✅ |
 | 43 | 3 | `tests/a11y.spec.ts`（axe-core 全頁） | 🤖 | ✅ |
 | 44 | 3 | 真實手機目視確認 | 👁 | ⬜ |
-| 45 | 3 | `npm audit --audit-level=high` | 🤖 | ⬜ |
+| 45 | 3 | `npm audit --audit-level=high` | 🤖 | ⚠️ Next.js 14 CVEs（需升至 16.x 修復，breaking change） |
 | 46 | 3 | 靜態分析：無原生 `<img>` tag | 🤖 | ✅ |
 | 47 | 3 | Lighthouse CI（`npm run lhci`） | 🤖 | ⬜ |
 | 48 | 3 | OG image 視覺確認 | 👁 | ⬜ |
@@ -467,7 +467,9 @@ lighthouserc.js
 - shadcn v4 base-nova 不相容 Tailwind v3，改用 Radix UI 手動建立元件
 - lucide-react 已移除 Github brand icon，改用內嵌 SVG
 
-**完成：37/48 項 ✅　待執行：11/48 項 ⬜**
+**完成：43/48 項 ✅　待執行/觀察：5/48 項 ⬜⚠️**
+
+**已部署：** https://personal-website-pursky7468s-projects.vercel.app
 
 ---
 
