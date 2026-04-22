@@ -6,15 +6,23 @@ import { AnimateIn } from "@/components/AnimateIn"
 
 export const metadata: Metadata = {
   title: "About",
-  description: "About Steve Lin — builder, tinkerer, AI tooling enthusiast.",
+  description: "About Steve Lin — automation engineer exploring AI and LLM tooling.",
 }
 
 const skills = {
-  Languages: ["Python", "TypeScript", "C#", "SQL"],
-  Frameworks: ["FastAPI", "Next.js", ".NET 8", "Electron"],
-  "AI / LLM": ["Claude API", "MCP", "Groq", "Gemini", "sentence-transformers"],
-  Data: ["PostgreSQL", "SQLite", "SQLAlchemy", "FTS5"],
-  Tools: ["Docker", "Git", "Vercel", "GitHub Actions"],
+  Professional: {
+    Languages: ["C#", "C++", "Python"],
+    Frameworks: ["WPF", "MFC", ".NET 8"],
+    Vision: ["OpenCV", "Emgu CV", "VTK", "3D Point Cloud"],
+    Automation: ["RoboDK", "OpenCASCADE", "PLC", "TCP/IP"],
+  },
+  Exploring: {
+    Languages: ["TypeScript", "Python"],
+    Frameworks: ["FastAPI", "Next.js"],
+    "AI / LLM": ["Claude API", "MCP", "Groq", "Gemini", "sentence-transformers"],
+    Data: ["PostgreSQL", "SQLite", "SQLAlchemy", "FTS5"],
+    Tools: ["Docker", "Git", "Vercel", "GitHub Actions"],
+  },
 }
 
 export default function AboutPage() {
@@ -23,15 +31,21 @@ export default function AboutPage() {
       <AnimateIn>
         <section>
           <h1 className="text-3xl font-bold tracking-tight mb-4">About</h1>
-          <div className="prose prose-neutral dark:prose-invert max-w-none">
-            <p className="text-muted-foreground leading-relaxed">
-              Hi, I&apos;m Steve. I like building things — full-stack applications, AI pipelines, and tools
-              that solve problems I actually have. Most of what you&apos;ll find here are personal projects
-              built to scratch an itch or explore something new.
+          <div className="space-y-3 text-muted-foreground leading-relaxed">
+            <p>
+              I&apos;m Steve, an automation engineer based in Taiwan with 9+ years of experience in
+              industrial robotics, machine vision, and system integration — working across robotic
+              arms, AMRs, 3D point cloud processing, and AI-based inspection systems.
             </p>
-            <p className="mt-3 text-muted-foreground leading-relaxed">
-              I tend to work end-to-end: from database schema to UI to deployment. Lately I&apos;ve been
-              spending a lot of time with LLM integrations, particularly building custom MCP servers for Claude.
+            <p>
+              Outside of work, I&apos;ve been building personal tools to explore what&apos;s possible
+              with modern AI and LLM APIs. Most of what you&apos;ll find here are side projects built
+              to scratch an itch: connecting Claude&apos;s MCP to real data sources, automating my
+              own information workflow, and figuring out how AI fits into the kind of systems I work
+              with professionally.
+            </p>
+            <p className="font-medium text-foreground">
+              My day job is C# and C++. My weekend is Python and TypeScript.
             </p>
           </div>
         </section>
@@ -42,7 +56,7 @@ export default function AboutPage() {
           <h2 className="text-xl font-semibold mb-4">Currently Exploring</h2>
           <p className="text-muted-foreground">
             MCP (Model Context Protocol) tooling, semantic search without dedicated vector databases,
-            and building personal knowledge systems with AI assistance.
+            and figuring out how LLM agents can interact with industrial automation systems.
           </p>
         </section>
       </AnimateIn>
@@ -50,17 +64,27 @@ export default function AboutPage() {
       <AnimateIn delay={0.15}>
         <section>
           <h2 className="text-xl font-semibold mb-6">Tech I Use</h2>
-          <div className="space-y-4">
-            {Object.entries(skills).map(([category, items]) => (
-              <div key={category} className="flex flex-col sm:flex-row sm:items-start gap-2">
-                <span className="text-sm font-medium text-muted-foreground w-32 shrink-0 pt-0.5">
-                  {category}
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {items.map((item) => (
-                    <Badge key={item} variant="outline" className="font-normal">
-                      {item}
-                    </Badge>
+
+          <div className="space-y-8">
+            {Object.entries(skills).map(([group, categories]) => (
+              <div key={group}>
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-4">
+                  {group === "Professional" ? "Professional" : "Personal / Exploring"}
+                </p>
+                <div className="space-y-3">
+                  {Object.entries(categories).map(([category, items]) => (
+                    <div key={category} className="flex flex-col sm:flex-row sm:items-start gap-2">
+                      <span className="text-sm font-medium text-muted-foreground w-32 shrink-0 pt-0.5">
+                        {category}
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {items.map((item) => (
+                          <Badge key={item} variant="outline" className="font-normal">
+                            {item}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
