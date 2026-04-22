@@ -1,0 +1,8 @@
+{
+  "bio": [
+    "I'm Steve, an automation engineer based in Taiwan with 9+ years of experience in industrial robotics, machine vision, and system integration — working across robotic arms, AMRs, 3D point cloud processing, and AI-based inspection systems.",
+    "Outside of work, I've been building personal tools to explore what's possible with modern AI and LLM APIs. Most of what you'll find here are side projects built to scratch an itch: connecting Claude's MCP to real data sources, automating my own information workflow, and figuring out how AI fits into the kind of systems I work with professionally.",
+    "My day job is C# and C++. My weekend is Python and TypeScript."
+  ],
+  "currentlyExploring": "MCP (Model Context Protocol) tooling, semantic search without dedicated vector databases, and figuring out how LLM agents can interact with industrial automation systems."
+}

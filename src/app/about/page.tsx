@@ -3,26 +3,12 @@ import { Mail } from "lucide-react"
 import { GithubIcon } from "@/components/icons"
 import { Badge } from "@/components/ui/badge"
 import { AnimateIn } from "@/components/AnimateIn"
+import aboutData from "@/data/about.json"
+import skillsData from "@/data/skills.json"
 
 export const metadata: Metadata = {
   title: "About",
   description: "About Steve Lin — automation engineer exploring AI and LLM tooling.",
-}
-
-const skills = {
-  Professional: {
-    Languages: ["C#", "C++", "Python"],
-    Frameworks: ["WPF", "MFC", ".NET 8"],
-    Vision: ["OpenCV", "Emgu CV", "VTK", "3D Point Cloud"],
-    Automation: ["RoboDK", "OpenCASCADE", "PLC", "TCP/IP"],
-  },
-  Exploring: {
-    Languages: ["TypeScript", "Python"],
-    Frameworks: ["FastAPI", "Next.js"],
-    "AI / LLM": ["Claude API", "MCP", "Groq", "Gemini", "sentence-transformers"],
-    Data: ["PostgreSQL", "SQLite", "SQLAlchemy", "FTS5"],
-    Tools: ["Docker", "Git", "Vercel", "GitHub Actions"],
-  },
 }
 
 export default function AboutPage() {
@@ -31,22 +17,19 @@ export default function AboutPage() {
       <AnimateIn>
         <section>
           <h1 className="text-3xl font-bold tracking-tight mb-4">About</h1>
-          <div className="space-y-3 text-muted-foreground leading-relaxed">
-            <p>
-              I&apos;m Steve, an automation engineer based in Taiwan with 9+ years of experience in
-              industrial robotics, machine vision, and system integration — working across robotic
-              arms, AMRs, 3D point cloud processing, and AI-based inspection systems.
-            </p>
-            <p>
-              Outside of work, I&apos;ve been building personal tools to explore what&apos;s possible
-              with modern AI and LLM APIs. Most of what you&apos;ll find here are side projects built
-              to scratch an itch: connecting Claude&apos;s MCP to real data sources, automating my
-              own information workflow, and figuring out how AI fits into the kind of systems I work
-              with professionally.
-            </p>
-            <p className="font-medium text-foreground">
-              My day job is C# and C++. My weekend is Python and TypeScript.
-            </p>
+          <div className="space-y-3">
+            {aboutData.bio.map((paragraph, i) => (
+              <p
+                key={i}
+                className={
+                  i === aboutData.bio.length - 1
+                    ? "font-medium text-foreground"
+                    : "text-muted-foreground leading-relaxed"
+                }
+              >
+                {paragraph}
+              </p>
+            ))}
           </div>
         </section>
       </AnimateIn>
@@ -54,19 +37,15 @@ export default function AboutPage() {
       <AnimateIn delay={0.1}>
         <section>
           <h2 className="text-xl font-semibold mb-4">Currently Exploring</h2>
-          <p className="text-muted-foreground">
-            MCP (Model Context Protocol) tooling, semantic search without dedicated vector databases,
-            and figuring out how LLM agents can interact with industrial automation systems.
-          </p>
+          <p className="text-muted-foreground">{aboutData.currentlyExploring}</p>
         </section>
       </AnimateIn>
 
       <AnimateIn delay={0.15}>
         <section>
           <h2 className="text-xl font-semibold mb-6">Tech I Use</h2>
-
           <div className="space-y-8">
-            {Object.entries(skills).map(([group, categories]) => (
+            {Object.entries(skillsData).map(([group, categories]) => (
               <div key={group}>
                 <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-4">
                   {group === "Professional" ? "Professional" : "Personal / Exploring"}
@@ -78,7 +57,7 @@ export default function AboutPage() {
                         {category}
                       </span>
                       <div className="flex flex-wrap gap-1.5">
-                        {items.map((item) => (
+                        {(items as string[]).map((item) => (
                           <Badge key={item} variant="outline" className="font-normal">
                             {item}
                           </Badge>

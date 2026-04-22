@@ -1,0 +1,15 @@
+{
+  "Professional": {
+    "Languages": ["C#", "C++", "Python"],
+    "Frameworks": ["WPF", "MFC", ".NET 8"],
+    "Vision": ["OpenCV", "Emgu CV", "VTK", "3D Point Cloud"],
+    "Automation": ["RoboDK", "OpenCASCADE", "PLC", "TCP/IP"]
+  },
+  "Exploring": {
+    "Languages": ["TypeScript", "Python"],
+    "Frameworks": ["FastAPI", "Next.js"],
+    "AI / LLM": ["Claude API", "MCP", "Groq", "Gemini", "sentence-transformers"],
+    "Data": ["PostgreSQL", "SQLite", "SQLAlchemy", "FTS5"],
+    "Tools": ["Docker", "Git", "Vercel", "GitHub Actions"]
+  }
+}
