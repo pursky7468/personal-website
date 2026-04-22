@@ -9,7 +9,7 @@ export function HeroSection() {
             Steve Lin
           </h1>
           <p className="mt-4 text-lg text-muted-foreground max-w-xl">
-            I build things and write about what I learn.
+            Automation engineer. 9 years integrating robots, vision systems, and industrial hardware. Now exploring where AI fits in the stack — and where it doesn&apos;t.
           </p>
         </AnimateIn>
       </div>

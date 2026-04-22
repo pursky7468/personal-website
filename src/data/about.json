@@ -1,8 +1,9 @@
 {
   "bio": [
-    "I'm Steve, an automation engineer based in Taiwan with 9+ years of experience in industrial robotics, machine vision, and system integration — working across robotic arms, AMRs, 3D point cloud processing, and AI-based inspection systems.",
-    "Outside of work, I've been building personal tools to explore what's possible with modern AI and LLM APIs. Most of what you'll find here are side projects built to scratch an itch: connecting Claude's MCP to real data sources, automating my own information workflow, and figuring out how AI fits into the kind of systems I work with professionally.",
-    "My day job is C# and C++. My weekend is Python and TypeScript."
+    "I'm Steve, an automation engineer based in Taiwan. For 9 years I've been building industrial systems — robotic arms, 3D point cloud inspection, AMR integration, and real-time machine communication over TCP/IP and PLC. The systems I work on have hard constraints: latency, accuracy, and the physical cost of failure.",
+    "That background shapes how I think about AI. Most of the computation problems in automation are already solved — simulation software handles kinematics, path planning, and code generation fine. The gap I keep running into is the translation layer: turning informal production requirements into executable specs, or correlating machine logs to diagnose a failure. That's where I'm experimenting with LLM tooling.",
+    "The side projects here reflect that exploration. They're also how I stay sharp on the software side: clean architecture, test coverage, API design.",
+    "Day job: C# and C++. Weekends: Python and TypeScript."
   ],
-  "currentlyExploring": "MCP (Model Context Protocol) tooling, semantic search without dedicated vector databases, and figuring out how LLM agents can interact with industrial automation systems."
+  "currentlyExploring": "Whether LLM assistance can make the requirements-to-spec translation more systematic — without losing the domain judgment that makes the output actually useful."
 }

@@ -1,0 +1,78 @@
+---
+title: "The translation problem in industrial automation"
+date: 2026-04-15
+tags: [Automation, Systems, Requirements]
+summary: The hardest part of building industrial systems isn't the code or the hardware. It's translating what the production floor needs into something a machine can execute.
+draft: false
+---
+
+After 9 years in industrial automation, the part that still surprises me
+isn't the robotics or the vision systems. It's the requirements problem.
+
+## What the production floor actually says
+
+A typical request from a production manager:
+
+> "We need to sort the parts faster. The current system misses too many."
+
+This is a complete description from their perspective. From an implementation
+perspective, it's almost nothing.
+
+What's missing:
+- "Faster" — current cycle time? Target? Is it throughput or latency?
+- "Misses too many" — what's the current miss rate? What's acceptable?
+- What's the cost model: false positive vs false negative?
+- What counts as a "miss" — wrong classification, or failure to pick?
+- What happens when the camera can't acquire a good image?
+
+Every one of these gaps becomes a decision made somewhere — explicitly in the
+spec, or implicitly in the code. The implicit ones are the ones that bite you.
+
+## Why this gap exists
+
+Production managers are optimizing for output. Engineers are optimizing for
+system correctness. Translating between those two worlds requires someone who
+understands both — and most of the time, the engineer is left to make judgment
+calls with incomplete information.
+
+The consequence: a system that works correctly according to the spec that was
+*written*, but incorrectly according to the requirement that was *meant*.
+
+## What a good spec actually contains
+
+After enough projects, the questions I always answer before writing a line of
+code:
+
+**Inputs**
+- Sensor type and accuracy (camera resolution, lighting, part geometry range)
+- Input variability (how different can incoming parts be?)
+- Error conditions (bad image, missing part, out-of-range detection)
+
+**Outputs**
+- Decision type (binary pick/no-pick, or confidence-weighted classification?)
+- Downstream consumer (robot path planner? Human inspector? Both?)
+- Latency requirement (hard real-time or best-effort?)
+
+**Constraints**
+- Safety envelope (what must never happen, regardless of other tradeoffs)
+- Acceptable error rates (and which direction is more expensive)
+- Recovery behavior (what does the system do on failure?)
+
+None of this is exotic. The problem is that extracting it from a verbal
+requirement requires asking the right questions — and knowing which questions
+to ask requires having been burned before.
+
+## Where I'm going with this
+
+This is the problem I'm starting to explore with LLM tooling: not automated
+decision-making inside a production system, but systematic requirements
+extraction at the front of the process.
+
+A structured prompt that walks through the checklist above. Converts the
+verbal requirement into a first-pass spec. Flags the ambiguities that need
+human resolution before any code gets written.
+
+The goal isn't to replace the engineer's judgment. It's to make the checklist
+faster to run and harder to skip.
+
+That experiment is in progress. I'll write about it when I have results.

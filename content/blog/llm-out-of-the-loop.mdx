@@ -1,0 +1,70 @@
+---
+title: "Why I kept the LLM out of the recommendation loop"
+date: 2026-04-22
+tags: [C#, .NET, LLM, Architecture, TDD]
+summary: The LINE Bot project had an obvious place to use an LLM. I chose not to. Here's why — and what that decision reveals about where AI tools actually belong.
+draft: false
+---
+
+When I built the LINE Bot outfit recommender, the obvious move was to feed
+the weather data and wardrobe into an LLM and let it generate the
+recommendation. I didn't do that. Here's why.
+
+## The appeal is real
+
+An LLM recommendation would handle edge cases automatically. No need to
+enumerate every possible outfit combination. Natural language output. Easy to
+extend to new clothing categories. The model does the hard work.
+
+This is genuinely compelling. I understand why people default to it.
+
+## But the test suite told a different story
+
+The core question for any component in a system: how do you verify it works?
+
+For a rule-based recommendation engine, the answer is simple:
+
+```csharp
+// Given: 12°C, rainy, casual occasion
+// Expected: jacket + waterproof layer + closed shoes
+Assert.Equal(expectedOutfit, recommender.Suggest(weather, wardrobe, occasion));
+```
+
+132 passing tests. Deterministic. Fast.
+
+For an LLM recommendation:
+- You'd need to mock the API call
+- Output varies by prompt version, temperature, model update
+- "Close enough" isn't a test assertion
+
+I've spent enough time in industrial systems to have a strong opinion about
+this: when your output drives a real action — a physical pick, a user
+recommendation — non-determinism isn't a feature. It's a liability.
+
+## The actual tradeoff
+
+Using LLM would have made the recommendation *harder to reason about* in
+exchange for *less code to write*. That's the honest tradeoff.
+
+For a side project with 132 tests and 100% coverage, the code-writing cost
+was already low. The reasoning cost would have been permanent.
+
+There are places where that tradeoff reverses — where the problem space is too
+large to enumerate rules, or where a human is consuming the output and can
+evaluate it. That's where LLM belongs.
+
+The outfit recommender wasn't one of those places.
+
+## The connection to industrial work
+
+This maps directly to how I think about automation systems. A robot picking
+parts on a production line doesn't benefit from probabilistic output. The
+system needs to pick or not pick, and that decision needs to be explainable
+and testable.
+
+The interesting frontier is the layer *before* that. Converting an informal
+production requirement — "we need to sort 300 parts per hour, 99.5% accuracy"
+— into a structured specification a deterministic system can execute: that's
+a translation problem. That's where LLM might genuinely help.
+
+Not inside the control loop. In the requirements layer around it.
