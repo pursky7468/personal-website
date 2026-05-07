@@ -457,7 +457,7 @@ lighthouserc.js
 | 42 | 3 | `tests/responsive.spec.ts`（375 / 768 / 1280px） | 🤖 | ✅ |
 | 43 | 3 | `tests/a11y.spec.ts`（axe-core 全頁） | 🤖 | ✅ |
 | 44 | 3 | 真實手機目視確認 | 👁 | ⬜ |
-| 45 | 3 | `npm audit --audit-level=high` | 🤖 | ⚠️ Next.js 14 CVEs（需升至 16.x 修復，breaking change） |
+| 45 | 3 | `npm audit --audit-level=high` | 🤖 | ⚠️ 1 high（Next.js 14 CVEs），10 moderate（@lhci/cli + contentlayer2，dev-only）。Next.js CVEs：本站無 remotePatterns/rewrites，實際暴露面極低。升至 16.x 為 breaking change，contentlayer2 相容性未知，暫緩升級，風險已知且接受。 |
 | 46 | 3 | 靜態分析：無原生 `<img>` tag | 🤖 | ✅ |
 | 47 | 3 | Lighthouse CI（`npm run lhci`） | 🤖 | ✅ Perf ≥0.96 / A11y ≥0.98 / SEO =1.0 |
 | 48 | 3 | OG image 視覺確認 | 👁 | ⬜ |

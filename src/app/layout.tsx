@@ -21,10 +21,10 @@ export const metadata: Metadata = {
     default: "Steve Lin",
     template: "%s | Steve Lin",
   },
-  description: "Steve Lin — projects and writing.",
+  description: "Automation engineer with 9 years in robotics and industrial systems. Exploring where AI fits in the stack — side projects, notes, and experiments.",
   openGraph: {
-    title: "Steve Lin",
-    description: "Steve Lin — projects and writing.",
+    title: "Steve Lin — Automation Engineer & AI Explorer",
+    description: "Automation engineer with 9 years in robotics and industrial systems. Exploring where AI fits in the stack — side projects, notes, and experiments.",
     url: process.env.NEXT_PUBLIC_SITE_URL,
     siteName: "Steve Lin",
     locale: "en_US",
