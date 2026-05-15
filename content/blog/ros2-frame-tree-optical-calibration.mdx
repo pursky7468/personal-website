@@ -1,0 +1,245 @@
+---
+title: "ROS2 系統中的 Frame Tree：從 Optical Frame 到末端節點的完整旅程"
+date: 2026-05-15
+tags: [ROS2, Robotics, Coordinate Systems, TF, Linux, Computer Vision, Hand-Eye Calibration]
+summary: 完成 ICP-based extrinsic calibration 後，理論點雲和實際點雲出現系統性的旋轉偏差。這個問題看起來像校正精度不足，實際上是沒意識到 camera_link 和 camera_depth_optical_frame 之間的座標系旋轉差。這篇文章整理完整的 RealSense Frame Tree 結構，說明每一層 frame 之間的確切轉換數值，以及為什麼 optical frame 的選擇會讓校正結果差之毫釐、失之千里。
+draft: false
+---
+
+## 序章：校正完成，點雲卻對不上
+
+在開發機器人手臂視覺系統時，我完成了 Intel RealSense 深度相機的 extrinsic calibration（eye-in-hand 配置，相機裝在手臂末端）。
+
+驗證方式是用「理論點雲 vs 實際點雲」做對比：用相機拍手臂自身，同時從 joint state + URDF 推算出手臂的理論幾何，在 RViz 裡疊加顯示兩者。如果校正正確，兩個點雲應該完美重疊。
+
+但結果是系統性的旋轉偏移——不是平移偏差，是整個座標軸方向歪了。
+
+問題不在校正演算法，而在 frame 選錯了。
+
+---
+
+## 第一段：ROS 標準座標 vs 光學座標
+
+ROS 官方在 [REP 103](https://www.ros.org/reps/rep-0103.html) 定義了標準坐標系慣例：
+
+- **X 軸指向前方**
+- **Y 軸指向左側**
+- **Z 軸指向上方**
+
+相機影像的光學座標系（來自計算機視覺慣例）則是：
+
+- **X 軸指向右側**（影像右方）
+- **Y 軸指向下方**（影像下方）
+- **Z 軸指向前方**（鏡頭方向）
+
+兩者都是右手座標系，但軸方向完全不同。ROS 的 `_frame` 和 `_optical_frame` 的設計，就是為了在這兩套慣例之間架橋。
+
+---
+
+## 第二段：RealSense 的完整 Frame Tree
+
+### 各層結構
+
+根據 [realsense-ros 官方文件](https://dev.realsenseai.com/docs/ros2-wrapper/) 和 [issue #1099](https://github.com/IntelRealSense/realsense-ros/issues/1099)，RealSense D435 的 TF 結構如下：
+
+```
+camera_link
+  ├─ camera_depth_frame
+  │    └─ camera_depth_optical_frame
+  ├─ camera_color_frame
+  │    └─ camera_color_optical_frame
+  ├─ camera_infra1_frame
+  │    └─ camera_infra1_optical_frame
+  └─ camera_infra2_frame
+       └─ camera_infra2_optical_frame
+```
+
+**命名規則：**
+- `<prefix>_<sensor>_frame` → ROS 標準座標（X 前、Y 左、Z 上）
+- `<prefix>_<sensor>_optical_frame` → 光學座標（X 右、Y 下、Z 前）
+
+> ⚠️ 實際 frame 名稱和層級以 `ros2 run tf2_tools view_frames` 的輸出為準，不同 driver 版本可能略有差異。
+
+---
+
+### 各層之間的確切轉換數值
+
+#### `camera_link` → `camera_depth_frame`
+
+根據 [issue #497](https://github.com/IntelRealSense/realsense-ros/issues/497)：
+
+```
+translation : (0, 0, 0)
+rotation    : identity (0, 0, 0, 1)
+```
+
+**完全重疊，實質上是同一個位置和方向。** 兩者都遵循 ROS 標準座標（X 前、Y 左、Z 上）。
+
+> 注意：舊版 URDF/XACRO 視覺化檔案曾有非零偏移 [0.015, 0.018, 0.013]，但這已被認定為 bug。Runtime driver 中兩者完全重合。
+
+---
+
+#### `camera_depth_frame` → `camera_depth_optical_frame`
+
+根據 [issue #1099](https://github.com/IntelRealSense/realsense-ros/issues/1099)：
+
+```
+translation : (0, 0, 0)
+rotation (x, y, z, w) : (-0.5, 0.5, -0.5, 0.5)
+```
+
+**純旋轉，原點相同。** 旋轉矩陣展開後：
+
+```
+R = [[ 0,  0,  1],
+     [-1,  0,  0],
+     [ 0, -1,  0]]
+```
+
+逐軸驗證符合預期：
+
+| depth_frame 的方向 | 轉換後 | optical_frame 的意義 |
+|-------------------|--------|---------------------|
+| X = 前 (1,0,0)   | (0,0,1) | Z_optical = 前 ✅ |
+| Y = 左 (0,1,0)   | (-1,0,0) | -X_optical = 左 ✅ |
+| Z = 上 (0,0,1)   | (0,-1,0) | -Y_optical = 上 ✅ |
+
+---
+
+### 完整 Frame 差異總覽
+
+```
+camera_link
+    │  translation=(0,0,0), rotation=identity
+camera_depth_frame          ← 與 camera_link 完全重疊，ROS 標準座標
+    │  translation=(0,0,0), rotation=(-0.5, 0.5, -0.5, 0.5)
+camera_depth_optical_frame  ← 純旋轉，光學座標，點雲在這裡
+```
+
+---
+
+## 第三段：完整的 Robot Frame Tree
+
+```
+map
+  └─ odom
+      └─ base_link
+          ├─ arm_link_1  ─┐
+          ├─ arm_link_2   │ 動態 TF（由 joint state + URDF 決定）
+          └─ arm_link_3  ─┘
+              └─ camera_link          ← 靜態 TF（校正結果）
+                   └─ camera_depth_frame           (= camera_link，重疊)
+                        └─ camera_depth_optical_frame  ← 點雲在這裡
+```
+
+| TF 段落 | 類型 | 由誰決定 |
+|--------|------|---------|
+| `base_link → arm_link_*` | 動態 | joint state + URDF |
+| `arm_link_3 → camera_link` | 靜態 | 校正結果（v2r 反推） |
+| `camera_link → camera_depth_frame` | 靜態 | RealSense driver（identity） |
+| `camera_depth_frame → camera_depth_optical_frame` | 靜態 | RealSense driver（旋轉） |
+
+---
+
+## 第四段：ICP-based Extrinsic Calibration 踩坑記
+
+### 校正方法
+
+我們使用的是自製的 ICP-based extrinsic calibration，而非傳統的 marker-based AX=XB hand-eye calibration：
+
+1. 用 RealSense 拍攝機器人手臂自身，取得**實際點雲**
+2. 讀取當前 joint state，透過 URDF + forward kinematics 在 `base_link` 空間重建**理論點雲**
+3. 用 ICP 將實際點雲對齊到理論點雲，取得轉換矩陣 T
+
+這個 T 就是 **v2r（vision-to-robot）**：
+
+```
+v2r = T(camera_depth_optical_frame → base_link)
+```
+
+亦即：給定一個 `camera_depth_optical_frame` 裡的點，乘上 v2r 就得到它在 `base_link` 中的座標。
+
+### 驗證方式
+
+手臂靜止時，在 RViz 疊加顯示：
+- **實際點雲**：RealSense 拍攝，經 v2r 轉換到 `base_link` 空間
+- **理論點雲**：URDF + 當前 joint state 推算
+
+若兩者完美重疊，校正正確；若出現系統性偏差，代表 frame 選錯了。
+
+> ⚠️ 驗證時手臂必須靜止，避免 joint state 和點雲 timestamp 不同步引入額外偏差。
+
+### 問題根源
+
+實際點雲的 `frame_id` 是 `camera_depth_optical_frame`（光學座標：X 右、Y 下、Z 前），但如果 ICP 的實作沒有意識到這點，誤把這些座標當成 `camera_link` / `camera_depth_frame`（ROS 標準座標：X 前、Y 左、Z 上）來處理：
+
+```
+camera_link 和 camera_depth_optical_frame 之間差了：
+  rotation (x,y,z,w) = (-0.5, 0.5, -0.5, 0.5)
+
+ICP 拿著方向錯誤的 source，去對齊正確的 target
+→ 算出來的 v2r 帶著這個固定的旋轉誤差
+→ 不管校正幾組，誤差永遠消不掉
+```
+
+### 修正與 TF 發佈
+
+修正 ICP 的 frame 處理後，v2r 數值正確。發佈到 TF 時：
+
+```python
+# 正確做法：發佈 base_link → camera_link
+# 讓 RealSense driver 繼續負責 camera_link → camera_depth_optical_frame 那段
+static_tf.header.frame_id = 'base_link'
+static_tf.child_frame_id = 'camera_link'
+# transform 值 = v2r 反推一層（消掉 optical→depth 的旋轉）
+```
+
+**不要直接發佈 `base_link → camera_depth_optical_frame`**，否則 `camera_depth_optical_frame` 會有兩個 parent（RealSense driver 已經發佈了 `camera_depth_frame → camera_depth_optical_frame`），導致 TF tree 損毀。參考：[moveit_calibration issue #115](https://github.com/ros-planning/moveit_calibration/issues/115)。
+
+---
+
+## 第五段：排查工具箱
+
+```bash
+# 1. 確認點雲的實際 frame_id
+ros2 topic echo /camera/depth/color/points --max-msgs 1 | grep frame_id
+
+# 2. 視覺化完整 frame tree（生成 frames.pdf）
+ros2 run tf2_tools view_frames
+
+# 3. 確認特定轉換存在且數值合理
+ros2 run tf2_ros tf2_echo base_link camera_depth_optical_frame
+
+# 4. 查看 RealSense 發佈的靜態 TF
+ros2 topic echo /tf_static --max-msgs 20
+
+# 5. RViz 視覺化（加入 TF plugin 查看各軸方向）
+ros2 run rviz2 rviz2
+```
+
+---
+
+## 第六段：核心要點
+
+### 三件必須記住的事
+
+1. **`camera_link` = `camera_depth_frame`（runtime 完全重疊）**，兩者都是 ROS 標準座標
+2. **`camera_depth_frame` 和 `camera_depth_optical_frame` 只差一個旋轉**，四元數 `(-0.5, 0.5, -0.5, 0.5)`，原點相同
+3. **ICP 的 source 點雲 frame_id 是 `camera_depth_optical_frame`**，一定要用對，否則 v2r 帶著系統性旋轉誤差無法消除
+
+### 調試檢查清單
+
+- [ ] `ros2 topic echo` 確認點雲 `frame_id` 是 `camera_depth_optical_frame`
+- [ ] ICP source 的座標確認是以 optical frame 為基準（X 右、Y 下、Z 前）
+- [ ] v2r 發佈到 TF 時，child 是 `camera_link`，不是 `camera_depth_optical_frame`
+- [ ] 驗證時手臂靜止，RViz 疊加理論點雲和實際點雲確認重疊
+
+---
+
+## 參考資料
+
+- [REP 103 — Standard Units of Measure and Coordinate Conventions](https://www.ros.org/reps/rep-0103.html)
+- [realsense-ros — ROS2 Wrapper 官方文件](https://dev.realsenseai.com/docs/ros2-wrapper/)
+- [realsense-ros issue #497 — camera_link 與 camera_depth_frame 的關係](https://github.com/IntelRealSense/realsense-ros/issues/497)
+- [realsense-ros issue #1099 — Frame 方向的困惑（含 quaternion_optical 數值）](https://github.com/IntelRealSense/realsense-ros/issues/1099)
+- [moveit_calibration issue #115 — TF 雙 parent 問題](https://github.com/ros-planning/moveit_calibration/issues/115)
