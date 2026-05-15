@@ -3,7 +3,7 @@ title: "Transform 的方向語義：為什麼 Calibration 結果放進 TF 有時
 date: 2026-05-15
 tags: [ROS2, Robotics, Coordinate Systems, TF, Computer Vision, Calibration, ICP, OpenCV]
 summary: 我們的點雲在 RViz 中方向完全正確，但把 calibration 結果發布到 TF 之後，整個模型鏡像翻轉。最後發現不是 ICP 算錯，而是對「TF 到底在存哪個方向的 transform」沒有清楚的語義模型。這篇文章用兩個真實案例說明 active 與 passive transform 的本質差異，以及一個可以直接套用的兩步判斷框架。
-draft: true
+draft: false
 ---
 
 ## 序章：校正完成，TF 發布後整個反掉
