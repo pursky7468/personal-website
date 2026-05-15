@@ -151,35 +151,43 @@ row vector conv.:   決定 v' = v * M 還是 v' = M * v  ← 這個才是重點
 問題程式碼：
 
 ```csharp
-var c_T_a = c_T_r * r_T_c;
+Matrix4 c_T_r = GetCameraFromRobotTransform();
+Matrix4 r_T_a = GetRobotFromArmTransform();
+
+var c_T_a = c_T_r * r_T_a;  // 編譯過，命名對，cancellation rule 驗也過——但結果是錯的
 ```
 
-**正確版本應為：**
+這個 bug 真正危險的地方是：它通過了所有你平常會做的檢查。
+
+- **命名**：`c_T_r * r_T_a`，符合 `{dest}_T_{src}` 約定 ✓
+- **Cancellation rule**：r 消去，結果是 `c_T_a` ✓
+- **Compiler**：Matrix4 乘 Matrix4，沒有錯誤 ✓
+- **執行期**：不 crash，回傳一個看起來合理的矩陣 ✓
+
+只有最後拿去用的時候，機械臂位置偏了，才知道有問題。
+
+**根本原因**：OpenTK 的 `*` 運算子實作的是 row convention 的矩陣乘法。你寫的是 column convention 的乘法順序，但 OpenTK 用 row convention 執行，兩者語義不同，結果不同。
+
+正確做法是透過 helper 明確標記 convention：
 
 ```csharp
-// Column convention 語義（在 OpenTK 中需透過 helper 處理）
-var c_T_a = c_T_r * r_T_a;
+// Cancellation rule 依然成立：c_T_r * r_T_a → r 消去 → c_T_a ✓
+// 但這裡的 * 是 column convention 語義的乘法，不是 OpenTK 的原生 *
+var c_T_a = ColumnVectorTransforms.Compose(c_T_r, r_T_a);
 ```
-
-原始程式碼的兩個問題：
-
-1. **`r_T_c` 語義錯誤**：按命名約定，`r_T_c` 是「把 camera frame 的向量帶到 robot frame」，也就是 `c_T_r` 的 inverse，根本不是 `r_T_a`。用 cancellation rule 驗：`c_T_r * r_T_c` → r 消去 → 結果是 `c_T_c`（identity，不是我們要的 `c_T_a`）
-
-2. **OpenTK 是 row convention，乘法順序必須反轉**：即使把 `r_T_c` 改成正確的 `r_T_a`，直接用 `*` 運算子在 OpenTK 中計算，也是錯的
 
 ## 實際程式碼範例
 
-### 錯誤版本（混合約定）
+### 錯誤版本（在 OpenTK 中直接用 column convention 的乘法順序）
 
 ```csharp
-// OpenTK = row convention，但用 robotics naming
-Matrix4 c_T_r = GetCameraToRobotTransform();
-Matrix4 r_T_c = GetRobotToCameraTransform();  // 語義上是 c_T_r 的 inverse！
+Matrix4 c_T_r = GetCameraFromRobotTransform();
+Matrix4 r_T_a = GetRobotFromArmTransform();
 
-// 兩個錯誤疊加：
-// 1. r_T_c 語義錯（cancellation rule: c_T_r * r_T_c → c_T_c，不是 c_T_a）
-// 2. row convention 下乘法順序也錯
-var c_T_a = c_T_r * r_T_c;
+// 命名正確、cancellation rule 通過、compiler 過——但 OpenTK 用 row convention 執行
+// 實際計算的不是 c_T_r * r_T_a（column convention），而是 row convention 的矩陣積
+// 兩者數值不同，機械臂拿到的位置會錯
+var c_T_a = c_T_r * r_T_a;
 ```
 
 ### 正確版本（使用公司的 Column Vector Helper）
@@ -222,10 +230,14 @@ var c_T_a = ColumnVectorTransforms.Compose(c_T_r, r_T_a);
 
 ## 為什麼這個 Bug 難發現
 
-- **編譯器不報錯**：Matrix4 乘法語法完全合法
-- **結果「有點對」**：旋轉角度小的時候誤差不明顯
-- **混合約定太常見**：圖形學和機器人學的庫幾乎必然同時使用
-- **命名讓人放鬆警覺**：`c_T_r` 這種 robotics naming 讓人以為數學也是 column convention
+所有平常會做的靜態檢查全部通過：
+
+- **命名**：`{dest}_T_{src}` 約定沒有違反
+- **Cancellation rule**：手動驗一遍，r 消去，結果是 `c_T_a`，看起來對
+- **Compiler**：Matrix4 * Matrix4，型別完全合法
+- **執行期**：不 crash，矩陣數值看起來合理
+
+唯一能抓到這個 bug 的是：知道 OpenTK 的 `*` 是 row convention，**或者**有一個驗證 frame chaining 合成結果的測試。
 
 ## 解決策略
 
