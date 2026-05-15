@@ -165,7 +165,9 @@ static_tf.transform       = v2r
 
 TF 收到這個之後，`lookup_transform('base_link', 'camera_link')` 回傳的是 `inv(v2r)` 而不是 v2r——結果就是鏡像翻轉。
 
-這個 bug 和 active/passive **沒有關係**，純粹是 Step 1 的 parent/child 填錯。
+這個 bug 純粹是 Step 1 的 parent/child 填錯，Step 2 本身沒有問題。
+
+> 補充：ICP 輸出的 T 方向之所以正確、不需要 invert，是因為**我們設定問題的方式**：source 點在 camera frame、target 點在 base frame，ICP 求解出的 T 自然滿足 `p_base = T × p_camera`，剛好和 TF 的要求一致。這不是 ICP 演算法本身的特性，而是 problem setup 的結果。如果哪天 source/target 對調，結果就會反過來。
 
 > 注意：我們還需要再反推一層，把 child 從 `camera_depth_optical_frame` 改成 `camera_link`，以避免 RealSense driver 造成的 TF tree 雙 parent 問題。詳見[上一篇文章](/blog/ros2-frame-tree-optical-calibration)。
 
@@ -197,16 +199,20 @@ p_camera = R × p_world + t
 
 ```python
 R_mat, _ = cv2.Rodrigues(rvec)
+tvec = tvec.reshape(3, 1)  # OpenCV 有時回傳 (3,1)，有時 (3,)，先統一
 
-# solvePnP 給的是 p_camera = R × p_world + t
-# TF 要的是 p_world = R' × p_camera + t'，需要 invert
+# solvePnP 給的是 p_camera = R × p_world + t（active）
+# SE(3) 的 inverse 公式：
+#   T     = [R  | t ]    T⁻¹ = [Rᵀ | -Rᵀt]
+#           [0  | 1 ]          [0  |  1   ]
+# 所以：
 R_inv = R_mat.T
-t_inv = -R_inv @ tvec
+t_inv = -R_inv @ tvec     # 注意：不是直接取負號，要先乘 R_inv
 
 static_tf.header.frame_id = 'base_link'
 static_tf.child_frame_id  = 'camera_link'
 static_tf.transform.rotation    = quaternion_from_matrix(R_inv)
-static_tf.transform.translation = t_inv
+static_tf.transform.translation = t_inv.flatten()
 ```
 
 ### 兩個案例的對比
@@ -261,6 +267,11 @@ print(child_origin_in_parent[:3])
 
 如果讀完文章還是不確定自己的情況要怎麼處理，用這張表逐步查詢。
 
+**從哪裡開始：**
+- 不知道從哪裡起步 → 從 **[A]** 開始，依序走
+- 知道 T 的來源，但不確定方向 → 直接跳 **[D]** 做原點測試
+- 已經發布 TF，但 RViz 顯示異常 → 直接跳 **[E]** 對症查詢
+
 ---
 
 ### A. 先確認你手上的 T 是從哪裡來的
@@ -290,11 +301,17 @@ static_tf.transform       = T                # 直接用，不需要 invert
 ### C. T 方向反了（`p_child = T × p_parent`）→ 先 invert，再發布
 
 ```python
-# 求逆
+# 通用做法：直接求逆
 T_inv = np.linalg.inv(T)
-# 如果 T 是純旋轉矩陣（SE3），也可以用：
-# R_inv = R.T
-# t_inv = -R.T @ t
+
+# 如果 T 是 SE(3)（旋轉 + 平移的 4x4 homogeneous matrix），
+# 可以用解析公式，比 np.linalg.inv 更快且數值穩定：
+#   T     = [R  | t ]    T⁻¹ = [Rᵀ | -Rᵀt]
+#           [0  | 1 ]          [0  |  1   ]
+R = T[:3, :3]
+t = T[:3, 3:]
+R_inv = R.T
+t_inv = -R_inv @ t      # 注意：平移不是直接取負號，要先乘 R_inv
 
 static_tf.header.frame_id = 'parent_frame'
 static_tf.child_frame_id  = 'child_frame'
@@ -344,8 +361,8 @@ print("child frame 原點在 parent frame 的位置：", result[:3])
 | ICP source=camera, target=base | base_link → camera_optical | 否 | T 方向已符合 TF 要求 |
 | OpenCV solvePnP | base_link → camera_link | **是** | solvePnP 是 active convention |
 | lookup_transform 結果再發布 | 同原本的 target → source | 否 | 本來就是 TF 格式 |
-| hand-eye calibration (AX=XB)，eye-in-hand | end_effector → camera_link | 視工具而定 | 查工具文件確認輸出 convention |
-| hand-eye calibration (AX=XB)，eye-to-hand | base_link → camera_link | 視工具而定 | 查工具文件確認輸出 convention |
+| hand-eye calibration (AX=XB)，eye-in-hand | end_effector → camera_link | 查工具文件 | 文件若說「T_cam_to_ee」→ 需要 invert；「T_ee_to_cam」→ 不需要；不確定 → 用 [D] 原點測試驗證 |
+| hand-eye calibration (AX=XB)，eye-to-hand | base_link → camera_link | 查工具文件 | 文件若說「T_cam_to_base」→ 需要 invert；「T_base_to_cam」→ 不需要；不確定 → 用 [D] 原點測試驗證 |
 
 ---
 
