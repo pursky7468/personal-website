@@ -73,9 +73,11 @@ translation : (0, 0, 0)
 rotation    : identity (0, 0, 0, 1)
 ```
 
-**完全重疊，實質上是同一個位置和方向。** 兩者都遵循 ROS 標準座標（X 前、Y 左、Z 上）。
+在 RealSense D435 ROS2 driver 的 runtime TF 中，兩者完全重疊，實質上是同一個位置和方向，都遵循 ROS 標準座標（X 前、Y 左、Z 上）。
 
 > 注意：舊版 URDF/XACRO 視覺化檔案曾有非零偏移 [0.015, 0.018, 0.013]，但這已被認定為 bug。Runtime driver 中兩者完全重合。
+>
+> ⚠️ 這是 RealSense D435 driver 的特定行為。其他相機（ZED、Azure Kinect、自製相機等）的 `camera_link` 可能代表機構中心或 IMU 位置，與 `camera_depth_frame` 之間有非零的 translation offset。請以 `ros2 run tf2_tools view_frames` 的實際輸出為準，不要假設兩者重合。
 
 ---
 
@@ -111,7 +113,7 @@ R = [[ 0,  0,  1],
 ```
 camera_link
     │  translation=(0,0,0), rotation=identity
-camera_depth_frame          ← 與 camera_link 完全重疊，ROS 標準座標
+camera_depth_frame          ← RealSense D435 driver 中與 camera_link 重疊，ROS 標準座標
     │  translation=(0,0,0), rotation=(-0.5, 0.5, -0.5, 0.5)
 camera_depth_optical_frame  ← 純旋轉，光學座標，點雲在這裡
 ```
@@ -128,7 +130,7 @@ map
           ├─ arm_link_2   │ 動態 TF（由 joint state + URDF 決定）
           └─ arm_link_3  ─┘
               └─ camera_link          ← 靜態 TF（校正結果）
-                   └─ camera_depth_frame           (= camera_link，重疊)
+                   └─ camera_depth_frame           (RealSense D435: 與 camera_link 重疊)
                         └─ camera_depth_optical_frame  ← 點雲在這裡
 ```
 
@@ -223,7 +225,7 @@ ros2 run rviz2 rviz2
 
 ### 三件必須記住的事
 
-1. **`camera_link` = `camera_depth_frame`（runtime 完全重疊）**，兩者都是 ROS 標準座標
+1. **RealSense D435 driver 中，`camera_link` 與 `camera_depth_frame` 在 runtime 重疊**，兩者都是 ROS 標準座標；其他相機不一定如此，請以 `view_frames` 確認
 2. **`camera_depth_frame` 和 `camera_depth_optical_frame` 只差一個旋轉**，四元數 `(-0.5, 0.5, -0.5, 0.5)`，原點相同
 3. **ICP 的 source 點雲 frame_id 是 `camera_depth_optical_frame`**，一定要用對，否則 v2r 帶著系統性旋轉誤差無法消除
 
