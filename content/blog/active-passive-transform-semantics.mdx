@@ -1,0 +1,359 @@
+---
+title: "Transform 的方向語義：為什麼 Calibration 結果放進 TF 有時要 Invert，有時不用"
+date: 2026-05-15
+tags: [ROS2, Robotics, Coordinate Systems, TF, Computer Vision, Calibration, ICP, OpenCV]
+summary: 我們的點雲在 RViz 中方向完全正確，但把 calibration 結果發布到 TF 之後，整個模型鏡像翻轉。最後發現不是 ICP 算錯，而是對「TF 到底在存哪個方向的 transform」沒有清楚的語義模型。這篇文章用兩個真實案例說明 active 與 passive transform 的本質差異，以及一個可以直接套用的兩步判斷框架。
+draft: true
+---
+
+## 序章：校正完成，TF 發布後整個反掉
+
+我們完成了 ICP-based extrinsic calibration，拿到了 v2r 矩陣。點雲在 RViz 裡顯示完全正確——理論點雲和實際點雲完美重疊。
+
+然後我們把 v2r 發布成靜態 TF。
+
+結果：機器人手臂的模型整個鏡像翻轉，像是被人從玻璃後面看。
+
+我們第一反應是 ICP 算錯了，重跑了幾次，數值一樣。接著懷疑 quaternion 的 convention 問題，也檢查過。最後才發現：
+
+**不是算錯，是 TF 的 parent/child 填反了。**
+
+修好之後，我們才意識到：如果當初對「TF 到底在存什麼」有清楚的模型，這個 bug 根本不會出現。這篇文章就是把這個模型說清楚。
+
+---
+
+## 第一段：Active 和 Passive 是什麼
+
+### 最直覺的區別
+
+給一個旋轉矩陣 R，有兩種完全不同的使用方式：
+
+**Active transform（主動變換）**
+
+> 點在動，座標系不動。
+
+```
+p' = R × p
+```
+
+物理意義：把點 p 旋轉到新位置 p'，兩者在同一個座標系裡描述。
+
+**Passive transform（被動變換）**
+
+> 點不動，座標系在換。
+
+```
+p_B = R × p_A
+```
+
+物理意義：同一個物理點，在座標系 A 裡是 p_A，在座標系 B 裡是 p_B。點沒有移動，只是換了一個角度描述它。
+
+### 關鍵關係
+
+Active 和 passive 使用的是**互為逆矩陣**的旋轉：
+
+```
+R_passive = R_active⁻¹ = R_activeᵀ  （旋轉矩陣的逆等於轉置）
+```
+
+這就是為什麼「同一個矩陣」在不同情境下需要轉置或取逆——你拿到的矩陣可能是 active convention，但你要用的地方是 passive convention，或反過來。
+
+### 為什麼矩陣長得一模一樣卻語義不同
+
+這是這個問題最核心的困難：
+
+```
+Active:   p' = R × p     （p 被旋轉到新位置）
+Passive:  p_B = R × p_A  （同一個點，不同 frame 的表達）
+```
+
+兩個式子的形式完全相同，都是「矩陣乘向量」。但物理意義完全不同。如果沒有人告訴你這個 R 是哪種 convention，光看式子無法判斷。
+
+這就是為什麼這個問題那麼難找到：**程式跑得起來，數值也在合理範圍，但語義是錯的**。
+
+---
+
+## 第二段：ROS2 TF 是 Passive Convention
+
+ROS2 的 TF 系統是 passive convention。
+
+`lookup_transform(target_frame, source_frame)` 回傳的 transform T 滿足：
+
+```
+p_target = T × p_source
+```
+
+物理意義：**同一個物理點**，在 `source_frame` 裡是 p_source，在 `target_frame` 裡是 p_target。TF 從來不「移動點」，只是幫你換一個座標系描述它。
+
+當你發布一個靜態 TF：
+
+```python
+tf_msg.header.frame_id = 'base_link'     # parent
+tf_msg.child_frame_id  = 'camera_link'   # child
+tf_msg.transform       = T
+```
+
+這個 T 的語義是：
+
+> 「把 `camera_link` 裡的點，轉換到 `base_link` 所需要的 transform。」
+
+等價地：
+
+> 「`camera_link` 的原點和軸方向，用 `base_link` 的座標系表達出來的姿態。」
+
+---
+
+## 第三段：兩步判斷框架
+
+在把任何 calibration 結果發布到 TF 之前，先走完這兩步。**兩步是獨立的，各自可能出錯。**
+
+### Step 1：決定 TF tree 的層級
+
+> 誰是 parent？誰是 child？
+
+這個問題和數學無關，由**機器人的物理結構**決定。
+
+```
+base_link（機器人底座）
+  └─ camera_link（相機）   ← 正確：相機是底座的子節點
+```
+
+不能為了省掉 invert 而把層級倒過來。
+
+### Step 2：確認 T 的方向
+
+> 你手上的 T，是否滿足 `p_parent = T × p_child`？
+
+- **是** → 直接發布，不需要 invert
+- **否（方向反了）** → 先 `T = inv(T)`，再發布
+
+---
+
+## 第四段：案例一 — ICP（Step 1 出錯）
+
+### ICP 輸出的語義
+
+ICP calibration 的設定：
+
+- **Source**：RealSense 點雲，在 `camera_depth_optical_frame` 裡
+- **Target**：URDF + FK 重建的理論點雲，在 `base_link` 裡
+
+ICP 求解 T，使得：
+
+```
+T × p_camera ≈ p_base
+```
+
+對應到兩步框架：
+
+**Step 1：** 層級是 `base_link → camera_depth_optical_frame`（相機是底座的子節點）✅
+
+**Step 2：** T 滿足 `p_base = T × p_camera`，即 `p_parent = T × p_child`，方向正確 ✅
+
+→ **結論：T 可以直接發布，不需要 invert。**
+
+### 當初的錯誤在哪裡
+
+我們把 Step 1 填反了：
+
+```python
+# 錯誤：parent/child 對調
+static_tf.header.frame_id = 'camera_link'   # ❌ 填成 child
+static_tf.child_frame_id  = 'base_link'     # ❌ 填成 parent
+static_tf.transform       = v2r
+```
+
+TF 收到這個之後，`lookup_transform('base_link', 'camera_link')` 回傳的是 `inv(v2r)` 而不是 v2r——結果就是鏡像翻轉。
+
+這個 bug 和 active/passive **沒有關係**，純粹是 Step 1 的 parent/child 填錯。
+
+> 注意：我們還需要再反推一層，把 child 從 `camera_depth_optical_frame` 改成 `camera_link`，以避免 RealSense driver 造成的 TF tree 雙 parent 問題。詳見[上一篇文章](/blog/ros2-frame-tree-optical-calibration)。
+
+---
+
+## 第五段：案例二 — OpenCV solvePnP（Step 2 出錯）
+
+這個坑比 ICP 更普遍，幾乎所有做 camera-robot calibration 或 AR 的人都踩過。
+
+### solvePnP 的輸出語義
+
+`cv2.solvePnP` 估計相機位姿，輸出 `rvec` 和 `tvec`，語義是：
+
+```
+p_camera = R × p_world + t
+```
+
+把 world 的點移到 camera 空間——這是 **active convention**。
+
+對應到兩步框架：
+
+**Step 1：** 層級是 `base_link → camera_link`（相機是底座的子節點）✅
+
+**Step 2：** solvePnP 的 T 滿足 `p_camera = T × p_world`，即 `p_child = T × p_parent`，方向**反了** ❌
+
+→ **結論：需要 invert T，再發布。**
+
+### 正確做法
+
+```python
+R_mat, _ = cv2.Rodrigues(rvec)
+
+# solvePnP 給的是 p_camera = R × p_world + t
+# TF 要的是 p_world = R' × p_camera + t'，需要 invert
+R_inv = R_mat.T
+t_inv = -R_inv @ tvec
+
+static_tf.header.frame_id = 'base_link'
+static_tf.child_frame_id  = 'camera_link'
+static_tf.transform.rotation    = quaternion_from_matrix(R_inv)
+static_tf.transform.translation = t_inv
+```
+
+### 兩個案例的對比
+
+| | ICP 案例 | solvePnP 案例 |
+|--|---------|--------------|
+| Step 1 出錯？ | ✅ 是（parent/child 填反） | 否 |
+| Step 2 出錯？ | 否（T 方向正確） | ✅ 是（active convention，需要 invert） |
+| 症狀 | 鏡像翻轉 | 相機出現在世界原點的對稱位置 |
+| 修正 | 交換 parent/child | invert T |
+
+---
+
+## 第六段：現場快速驗證
+
+不確定時，在發布到 TF 之前先用以下方法驗算。
+
+### 方法一：原點測試
+
+```python
+# 把 child frame 的原點乘上 T，結果應該是 child 在 parent 裡的物理位置
+origin = np.array([0, 0, 0, 1])
+child_origin_in_parent = T @ origin
+print(child_origin_in_parent[:3])
+# 對照：相機實際裝在機器人哪裡？數值合理嗎？
+```
+
+### 方法二：RViz 診斷
+
+發布後，在 RViz 把 Fixed Frame 設成 `base_link`，加入 TF plugin：
+
+| 看到的現象 | 代表 | 修正方向 |
+|-----------|------|---------|
+| 相機 frame 出現在預期物理位置 | 正確 | — |
+| 相機 frame 出現在預期位置的鏡像點 | Step 2 出錯（T 方向反） | invert T |
+| 相機 frame 出現在 base_link 原點附近 | Step 1 出錯（parent/child 填反） | 交換 parent/child |
+| 相機 frame 完全不出現 | TF tree 斷掉 | 檢查是否有 frame 沒有 parent |
+
+---
+
+## 核心要點
+
+### 必須記住的三件事
+
+1. **Active = 點在動；Passive = 座標系在換**，數學形式相同，語義完全不同
+2. **ROS2 TF 永遠是 passive**：`lookup_transform(A, B)` 回傳的 T 滿足 `p_A = T × p_B`
+3. **要不要 invert，用兩步判斷**：Step 1 看物理層級，Step 2 看 T 方向；兩步獨立，各自可能出錯
+
+---
+
+## 附錄：Step-by-Step 對照查詢表
+
+如果讀完文章還是不確定自己的情況要怎麼處理，用這張表逐步查詢。
+
+---
+
+### A. 先確認你手上的 T 是從哪裡來的
+
+| 來源 | T 的語義 | 進入下一步 |
+|------|---------|----------|
+| ICP（source=camera, target=robot） | `p_robot = T × p_camera` | → [B] |
+| OpenCV `solvePnP` (rvec, tvec) | `p_camera = T × p_world` | → [C] |
+| `lookup_transform(A, B)` 的回傳值 | `p_A = T × p_B` | → [B] |
+| 自己寫的 FK / URDF | 看你怎麼計算 | → [D] |
+| 其他不確定的來源 | 不確定 | → [D] |
+
+---
+
+### B. T 方向正確（`p_parent = T × p_child`）→ 直接發布
+
+```python
+static_tf.header.frame_id = 'parent_frame'   # 填 parent
+static_tf.child_frame_id  = 'child_frame'    # 填 child
+static_tf.transform       = T                # 直接用，不需要 invert
+```
+
+**確認 parent/child 的層級是否和機器人物理結構一致。**
+
+---
+
+### C. T 方向反了（`p_child = T × p_parent`）→ 先 invert，再發布
+
+```python
+# 求逆
+T_inv = np.linalg.inv(T)
+# 如果 T 是純旋轉矩陣（SE3），也可以用：
+# R_inv = R.T
+# t_inv = -R.T @ t
+
+static_tf.header.frame_id = 'parent_frame'
+static_tf.child_frame_id  = 'child_frame'
+static_tf.transform       = T_inv            # 用 invert 後的版本
+```
+
+---
+
+### D. 不確定 T 的方向 → 用原點測試判斷
+
+```python
+origin = np.array([0, 0, 0, 1])
+result = T @ origin
+print("child frame 原點在 parent frame 的位置：", result[:3])
+```
+
+- 結果和 child frame 在機器人上的**實際物理位置**吻合 → T 方向正確，進入 [B]
+- 結果是實際位置的**鏡像或負值** → T 方向反了，進入 [C]
+- 結果接近 `(0, 0, 0)` → parent/child 可能填反了，重新檢查 Step 1
+
+---
+
+### E. 發布後 RViz 顯示異常 → 對症修正
+
+```
+症狀一：frame 出現在預期位置的鏡像點
+  → T 方向反了 → 回到 [C]，invert T
+
+症狀二：frame 出現在 base_link 原點附近（接近 0,0,0）
+  → parent/child 填反 → 交換 header.frame_id 和 child_frame_id
+
+症狀三：frame 完全不出現在 TF plugin
+  → 這個 frame 在 TF tree 裡是孤立的（沒有連接到主樹）
+  → 用 ros2 run tf2_tools view_frames 確認樹的結構
+
+症狀四：frame 位置正確，但旋轉方向怪
+  → 很可能是 optical frame 問題
+  → 參考前一篇文章：camera_depth_frame vs camera_depth_optical_frame
+```
+
+---
+
+### F. 常見情境快速對照
+
+| 情境 | Step 1（parent → child） | Step 2（需要 invert？） | 備注 |
+|------|--------------------------|------------------------|------|
+| ICP source=camera, target=base | base_link → camera_optical | 否 | T 方向已符合 TF 要求 |
+| OpenCV solvePnP | base_link → camera_link | **是** | solvePnP 是 active convention |
+| lookup_transform 結果再發布 | 同原本的 target → source | 否 | 本來就是 TF 格式 |
+| hand-eye calibration (AX=XB)，eye-in-hand | end_effector → camera_link | 視工具而定 | 查工具文件確認輸出 convention |
+| hand-eye calibration (AX=XB)，eye-to-hand | base_link → camera_link | 視工具而定 | 查工具文件確認輸出 convention |
+
+---
+
+## 參考資料
+
+- [REP 103 — Standard Units of Measure and Coordinate Conventions](https://www.ros.org/reps/rep-0103.html)
+- [ROS2 TF2 — lookup_transform 文件](https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Adding-A-Frame-Py.html)
+- [OpenCV solvePnP 文件](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html#ga549c2075fac14829ff4a58bc931c033d)
+- [realsense-ros issue #1099 — Frame 方向的困惑](https://github.com/IntelRealSense/realsense-ros/issues/1099)
+- [moveit_calibration issue #115 — TF 雙 parent 問題](https://github.com/ros-planning/moveit_calibration/issues/115)
+- 前一篇：[ROS2 系統中的 Frame Tree：從 Optical Frame 到末端節點的完整旅程](/blog/ros2-frame-tree-optical-calibration)
