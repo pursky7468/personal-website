@@ -132,6 +132,14 @@ Row convention 的消去規則方向**相反**：**左矩陣的 destination fram
 
 這是這個領域最常見的混淆，值得單獨說清楚。
 
+先釐清一個前提：**OpenTK 的 Matrix4 本身只是一個容器**，16 個 float 的儲存空間，沒有強制任何 convention。Convention 是你選擇的工具帶進來的：
+
+- **OpenTK 的 built-in 建立函式**（`Matrix4.CreateTranslation`、`Matrix4.CreateRotationX` 等）按 row convention 填入元素
+- **`*` 運算子**按 row convention 的語義合成矩陣
+- 如果你手動填元素，你可以選擇任何 convention——但後續的 `*` 仍然是 row convention
+
+所以問題不是 OpenTK「強迫」你用 row convention，而是當你混用 OpenTK 的 built-in 函式和 robotics 的 column convention 思維時，convention 在 `*` 這一行靜默地不一致。
+
 | 概念 | 定義 | 影響 |
 |------|------|------|
 | **Row/column vector convention** | 向量是 row 還是 column，決定 transform 左乘還是右乘 | 乘法語義、乘法順序、frame chaining 方向 |
