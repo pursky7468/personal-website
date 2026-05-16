@@ -2,24 +2,8 @@
 title: "Transform 的方向語義：為什麼 Calibration 結果放進 TF 有時要 Invert，有時不用"
 date: 2026-05-15
 tags: [ROS2, Robotics, Coordinate Systems, TF, Computer Vision, Calibration, ICP, OpenCV]
-summary: 我們的點雲在 RViz 中方向完全正確，但把 calibration 結果發布到 TF 之後，整個模型鏡像翻轉。最後發現不是 ICP 算錯，而是對「TF 到底在存哪個方向的 transform」沒有清楚的語義模型。這篇文章用兩個真實案例說明 active 與 passive transform 的本質差異，以及一個可以直接套用的兩步判斷框架。
+summary: 機器人視覺系統中最難診斷的 bug 類型之一，是 transform 在數值上合理、程式不報錯，但顯示結果是鏡像或整個跑偏。這類問題幾乎都指向同一個根源：active 與 passive transform 的語義混用，或 TF 的 parent/child 方向填錯。這篇文章用兩個真實案例深入分析每個方向搞錯時會產生什麼症狀，以及一個可以直接套用的兩步判斷框架。
 draft: false
----
-
-## 序章：校正完成，TF 發布後整個反掉
-
-我們完成了 ICP-based extrinsic calibration，拿到了 v2r 矩陣。點雲在 RViz 裡顯示完全正確——理論點雲和實際點雲完美重疊。
-
-然後我們把 v2r 發布成靜態 TF。
-
-結果：機器人手臂的模型整個鏡像翻轉，像是被人從玻璃後面看。
-
-我們第一反應是 ICP 算錯了，重跑了幾次，數值一樣。接著懷疑 quaternion 的 convention 問題，也檢查過。最後才發現：
-
-**不是算錯，是 TF 的 parent/child 填反了。**
-
-修好之後，我們才意識到：如果當初對「TF 到底在存什麼」有清楚的模型，這個 bug 根本不會出現。這篇文章就是把這個模型說清楚。
-
 ---
 
 ## 第一段：Active 和 Passive 是什麼
@@ -56,26 +40,18 @@ Active 和 passive 使用的是**互為逆矩陣**的旋轉：
 R_passive = R_active⁻¹ = R_activeᵀ  （旋轉矩陣的逆等於轉置）
 ```
 
-這就是為什麼「同一個矩陣」在不同情境下需要轉置或取逆——你拿到的矩陣可能是 active convention，但你要用的地方是 passive convention，或反過來。
-
 ### 為什麼矩陣長得一模一樣卻語義不同
-
-這是這個問題最核心的困難：
 
 ```
 Active:   p' = R × p     （p 被旋轉到新位置）
 Passive:  p_B = R × p_A  （同一個點，不同 frame 的表達）
 ```
 
-兩個式子的形式完全相同，都是「矩陣乘向量」。但物理意義完全不同。如果沒有人告訴你這個 R 是哪種 convention，光看式子無法判斷。
-
-這就是為什麼這個問題那麼難找到：**程式跑得起來，數值也在合理範圍，但語義是錯的**。
+兩個式子的形式完全相同。如果沒有人告訴你這個 R 是哪種 convention，光看式子無法判斷——**程式跑得起來，數值也在合理範圍，但語義是錯的**。
 
 ---
 
 ## 第二段：ROS2 TF 是 Passive Convention
-
-ROS2 的 TF 系統是 passive convention。
 
 `lookup_transform(target_frame, source_frame)` 回傳的 transform T 滿足：
 
@@ -83,7 +59,7 @@ ROS2 的 TF 系統是 passive convention。
 p_target = T × p_source
 ```
 
-物理意義：**同一個物理點**，在 `source_frame` 裡是 p_source，在 `target_frame` 裡是 p_target。TF 從來不「移動點」，只是幫你換一個座標系描述它。
+同一個物理點，在 `source_frame` 裡是 p_source，在 `target_frame` 裡是 p_target。TF 從來不「移動點」，只是幫你換一個座標系描述它。
 
 當你發布一個靜態 TF：
 
@@ -97,46 +73,40 @@ tf_msg.transform       = T
 
 > 「把 `camera_link` 裡的點，轉換到 `base_link` 所需要的 transform。」
 
-等價地：
-
-> 「`camera_link` 的原點和軸方向，用 `base_link` 的座標系表達出來的姿態。」
-
 ---
 
 ## 第三段：兩步判斷框架
 
-在把任何 calibration 結果發布到 TF 之前，先走完這兩步。**兩步是獨立的，各自可能出錯。**
+把任何 calibration 結果發布到 TF 之前，先走完這兩步。**兩步是獨立的，各自可能出錯，症狀也不同。**
 
 ### Step 1：決定 TF tree 的層級
 
 > 誰是 parent？誰是 child？
 
-這個問題和數學無關，由**機器人的物理結構**決定。
+由**機器人的物理結構**決定，和數學無關：
 
 ```
 base_link（機器人底座）
-  └─ camera_link（相機）   ← 正確：相機是底座的子節點
+  └─ camera_link（相機）   ← 相機是底座的子節點
 ```
-
-不能為了省掉 invert 而把層級倒過來。
 
 ### Step 2：確認 T 的方向
 
 > 你手上的 T，是否滿足 `p_parent = T × p_child`？
 
 - **是** → 直接發布，不需要 invert
-- **否（方向反了）** → 先 `T = inv(T)`，再發布
+- **否** → 先 `T = inv(T)`，再發布
 
 ---
 
-## 第四段：案例一 — ICP（Step 1 出錯）
+## 第四段：案例一 — ICP
 
 ### ICP 輸出的語義
 
-ICP calibration 的設定：
+ICP calibration 設定：
 
-- **Source**：RealSense 點雲，在 `camera_depth_optical_frame` 裡
-- **Target**：URDF + FK 重建的理論點雲，在 `base_link` 裡
+- **Source**：相機點雲，在 `camera_depth_optical_frame` 座標系
+- **Target**：URDF + FK 重建的理論點雲，在 `base_link` 座標系
 
 ICP 求解 T，使得：
 
@@ -144,70 +114,173 @@ ICP 求解 T，使得：
 T × p_camera ≈ p_base
 ```
 
-對應到兩步框架：
+對應兩步框架：
 
-**Step 1：** 層級是 `base_link → camera_depth_optical_frame`（相機是底座的子節點）✅
+- **Step 1：** parent = `base_link`，child = `camera_depth_optical_frame` ✅
+- **Step 2：** T 滿足 `p_base = T × p_camera` ✅
 
-**Step 2：** T 滿足 `p_base = T × p_camera`，即 `p_parent = T × p_child`，方向正確 ✅
+→ **T 可以直接發布，不需要 invert。**
 
-→ **結論：T 可以直接發布，不需要 invert。**
-
-### 當初的錯誤在哪裡
-
-我們把 Step 1 填反了：
-
-```python
-# 錯誤：parent/child 對調
-static_tf.header.frame_id = 'camera_link'   # ❌ 填成 child
-static_tf.child_frame_id  = 'base_link'     # ❌ 填成 parent
-static_tf.transform       = v2r
-```
-
-TF 收到這個之後，`lookup_transform('base_link', 'camera_link')` 回傳的是 `inv(v2r)` 而不是 v2r——結果就是鏡像翻轉。
-
-這個 bug 純粹是 Step 1 的 parent/child 填錯，Step 2 本身沒有問題。
-
-> 補充：ICP 輸出的 T 方向之所以正確、不需要 invert，是因為**我們設定問題的方式**：source 點在 camera frame、target 點在 base frame，ICP 求解出的 T 自然滿足 `p_base = T × p_camera`，剛好和 TF 的要求一致。這不是 ICP 演算法本身的特性，而是 problem setup 的結果。如果哪天 source/target 對調，結果就會反過來。
-
-> 注意：我們還需要再反推一層，把 child 從 `camera_depth_optical_frame` 改成 `camera_link`，以避免 RealSense driver 造成的 TF tree 雙 parent 問題。詳見[上一篇文章](/blog/ros2-frame-tree-optical-calibration)。
+> **為什麼 ICP 輸出剛好不需要 invert？**
+> 不是因為 ICP 是「passive 演算法」，而是因為我們的 problem setup：source 在 camera frame、target 在 base frame，ICP 求出的 T 自然滿足 TF 的要求。如果哪天 source/target 對調，輸出就會反過來。
 
 ---
 
-## 第五段：案例二 — OpenCV solvePnP（Step 2 出錯）
+### 如果 Step 1 填反了
 
-這個坑比 ICP 更普遍，幾乎所有做 camera-robot calibration 或 AR 的人都踩過。
+```python
+# 錯誤：parent/child 對調
+static_tf.header.frame_id = 'camera_link'   # ❌
+static_tf.child_frame_id  = 'base_link'     # ❌
+static_tf.transform       = T_icp
+```
+
+`lookup_transform('base_link', 'camera_link')` 回傳的是 `inv(T_icp)` 而不是 `T_icp`。
+
+**數學上發生了什麼：**
+
+```
+正確：p_base = T_icp × p_camera
+填反：p_base = inv(T_icp) × p_camera
+```
+
+`inv(T_icp)` 是「把 base 的點轉到 camera 空間」的 transform，拿它來轉換 camera 點雲，等於把點雲送往錯誤的方向。
+
+**症狀：**
+
+假設相機在機器人前方 0.5m、右側 0.2m：
+
+```
+正確 T_icp 的效果：camera 的點 → 出現在 base_link 前方 0.5m
+inv(T_icp) 的效果：camera 的點 → 出現在 base_link 後方 0.5m（鏡像位置）
+```
+
+點雲整體呈現鏡像翻轉，且翻轉的軸和相機相對機器人的安裝位置有關，不一定是單純的左右鏡像。
+
+---
+
+### 如果 Step 2 出錯（ICP source/target 對調）
+
+如果誰不小心把 ICP 的 source 和 target 對調：
+
+```python
+# 錯誤：source 和 target 反了
+result = icp(source=theoretical_cloud, target=actual_camera_cloud)
+```
+
+ICP 輸出的 T 滿足：
+
+```
+T × p_base ≈ p_camera
+```
+
+也就是 `inv(T_icp)`。此時 Step 2 出錯，需要 invert 才能用，但症狀和 Step 1 填反完全一樣——點雲鏡像翻轉。
+
+**這兩種錯的症狀相同，但根本原因不同，要用不同方式修。**
+
+診斷方式：用[附錄 D 的原點測試](#d-不確定-t-的方向--用原點測試判斷)確認 T 的方向，再判斷是 Step 1 還是 Step 2 出問題。
+
+---
+
+### 如果 Step 1 和 Step 2 同時出錯（最危險的情況）
+
+```python
+# Step 2 出錯：T 是 inv(T_icp)
+# Step 1 出錯：parent/child 又填反了
+static_tf.header.frame_id = 'camera_link'   # ❌
+static_tf.child_frame_id  = 'base_link'     # ❌
+static_tf.transform       = inv(T_icp)      # ❌
+```
+
+TF 看到 parent/child 反了，查詢時會再取一次 inv：
+
+```
+lookup_transform('base_link', 'camera_link')
+  = inv(inv(T_icp))
+  = T_icp   ← 正確的值！
+```
+
+**兩個錯誤互相抵消，點雲顯示結果完全正確。**
+
+這是最難察覺的情況。它只會在其他情境下爆發——例如當你把這個 TF 鏈接到其他節點，或者有其他程式直接查詢 `lookup_transform('camera_link', 'base_link')` 時，就會拿到錯誤的結果。
+
+> **工程上的啟示：** 「結果看起來正確」不代表實作是對的。TF 的 parent/child 語義影響的是整個 tree，不只是單一的查詢方向。
+
+---
+
+## 第五段：案例二 — OpenCV solvePnP
+
+幾乎所有做 camera-robot calibration 或 AR marker 定位的人都踩過這個坑。
 
 ### solvePnP 的輸出語義
 
-`cv2.solvePnP` 估計相機位姿，輸出 `rvec` 和 `tvec`，語義是：
+`cv2.solvePnP` 輸出 `rvec` 和 `tvec`，語義是：
 
 ```
 p_camera = R × p_world + t
 ```
 
-把 world 的點移到 camera 空間——這是 **active convention**。
+把 world（或 robot base）的點轉到 camera 空間——這是 **active convention**。
 
-對應到兩步框架：
+對應兩步框架：
 
-**Step 1：** 層級是 `base_link → camera_link`（相機是底座的子節點）✅
+- **Step 1：** parent = `base_link`，child = `camera_link` ✅
+- **Step 2：** T 滿足 `p_camera = T × p_world`，方向**反了** ❌
 
-**Step 2：** solvePnP 的 T 滿足 `p_camera = T × p_world`，即 `p_child = T × p_parent`，方向**反了** ❌
+→ **需要 invert T，再發布。**
 
-→ **結論：需要 invert T，再發布。**
+---
 
-### 正確做法
+### 如果 Step 2 沒有 invert（直接發布）
+
+```python
+# 錯誤：直接用 solvePnP 的結果
+R_mat, _ = cv2.Rodrigues(rvec)
+tvec = tvec.reshape(3, 1)
+
+static_tf.header.frame_id = 'base_link'
+static_tf.child_frame_id  = 'camera_link'
+static_tf.transform.rotation    = quaternion_from_matrix(R_mat)  # ❌
+static_tf.transform.translation = tvec                            # ❌
+```
+
+**數學上發生了什麼：**
+
+solvePnP 的 `tvec` 代表「world 原點在 camera 座標系裡的位置」，不是「camera 原點在 world 座標系裡的位置」。
+
+具體例子：
+
+```
+實際情況：相機在機器人前方 0.5m、高度 0.3m
+solvePnP 的 tvec：約等於 [-0.5, -0.3, ...] （machine origin in camera space）
+
+直接發布後，TF 認為 camera_link 在 base_link 的位置是 [-0.5, -0.3, ...]
+實際上 camera_link 應該在 [0.5, 0, 0.3]
+```
+
+**症狀：**
+
+相機的 frame 出現在近似「預期位置的負方向」——如果相機應該在機器人前上方，它反而出現在機器人後下方。旋轉方向也是反的。
+
+若是用轉換後的點雲去對照理論模型：點雲出現的位置和理論模型關於某個軸近似對稱，但不是簡單的鏡像。
+
+---
+
+### 正確做法（含 SE(3) inverse 說明）
 
 ```python
 R_mat, _ = cv2.Rodrigues(rvec)
 tvec = tvec.reshape(3, 1)  # OpenCV 有時回傳 (3,1)，有時 (3,)，先統一
 
 # solvePnP 給的是 p_camera = R × p_world + t（active）
-# SE(3) 的 inverse 公式：
-#   T     = [R  | t ]    T⁻¹ = [Rᵀ | -Rᵀt]
-#           [0  | 1 ]          [0  |  1   ]
-# 所以：
+# 需要 invert，公式為 SE(3) inverse：
+#
+#   T = [R  | t]    →    T⁻¹ = [Rᵀ | -Rᵀt]
+#       [0  | 1]               [0  |  1  ]
+#
+# 注意：平移部分不是直接取負號，必須先乘上 Rᵀ
 R_inv = R_mat.T
-t_inv = -R_inv @ tvec     # 注意：不是直接取負號，要先乘 R_inv
+t_inv = -R_inv @ tvec
 
 static_tf.header.frame_id = 'base_link'
 static_tf.child_frame_id  = 'camera_link'
@@ -215,41 +288,53 @@ static_tf.transform.rotation    = quaternion_from_matrix(R_inv)
 static_tf.transform.translation = t_inv.flatten()
 ```
 
-### 兩個案例的對比
+---
 
-| | ICP 案例 | solvePnP 案例 |
-|--|---------|--------------|
-| Step 1 出錯？ | ✅ 是（parent/child 填反） | 否 |
-| Step 2 出錯？ | 否（T 方向正確） | ✅ 是（active convention，需要 invert） |
-| 症狀 | 鏡像翻轉 | 相機出現在世界原點的對稱位置 |
-| 修正 | 交換 parent/child | invert T |
+### 如果 Step 1 也填反了
+
+```python
+# 兩步都錯
+static_tf.header.frame_id = 'camera_link'  # ❌
+static_tf.child_frame_id  = 'base_link'    # ❌
+static_tf.transform       = T_pnp          # 未 invert ❌
+```
+
+和 ICP 的情況一樣，兩個錯誤互相抵消，`lookup_transform('base_link', 'camera_link')` 的結果可能意外正確，但 TF tree 語義是錯的，在其他查詢方向或其他節點使用時會爆。
+
+---
+
+### 四種組合的症狀對比
+
+| Step 1 | Step 2 | 症狀 |
+|--------|--------|------|
+| ✅ 正確 | ✅ 正確 | 點雲對齊，顯示正確 |
+| ❌ 填反 | ✅ 正確 | 點雲鏡像翻轉 |
+| ✅ 正確 | ❌ 未 invert | 點雲出現在預期位置的「負方向」 |
+| ❌ 填反 | ❌ 未 invert | **表面上看起來正確，但語義錯誤，換個查詢方向就爆** |
 
 ---
 
 ## 第六段：現場快速驗證
 
-不確定時，在發布到 TF 之前先用以下方法驗算。
-
-### 方法一：原點測試
+### 方法一：原點測試（發布前）
 
 ```python
-# 把 child frame 的原點乘上 T，結果應該是 child 在 parent 裡的物理位置
+# 把 child frame 的原點乘上 T，應該得到 child 在 parent 的物理位置
 origin = np.array([0, 0, 0, 1])
-child_origin_in_parent = T @ origin
-print(child_origin_in_parent[:3])
-# 對照：相機實際裝在機器人哪裡？數值合理嗎？
+result = T @ origin
+print("child frame 原點在 parent frame 的位置：", result[:3])
+# 對照：相機實際裝在機器人哪裡？
 ```
 
-### 方法二：RViz 診斷
+### 方法二：RViz 或前端視覺化（發布後）
 
-發布後，在 RViz 把 Fixed Frame 設成 `base_link`，加入 TF plugin：
-
-| 看到的現象 | 代表 | 修正方向 |
-|-----------|------|---------|
-| 相機 frame 出現在預期物理位置 | 正確 | — |
-| 相機 frame 出現在預期位置的鏡像點 | Step 2 出錯（T 方向反） | invert T |
-| 相機 frame 出現在 base_link 原點附近 | Step 1 出錯（parent/child 填反） | 交換 parent/child |
-| 相機 frame 完全不出現 | TF tree 斷掉 | 檢查是否有 frame 沒有 parent |
+| 看到的現象 | 最可能的原因 | 對應修正 |
+|-----------|-------------|---------|
+| 點雲對齊 | 正確 | — |
+| 點雲鏡像翻轉 | Step 1 填反，或 Step 2 source/target 對調 | 原點測試確認後修正 |
+| 點雲出現在預期位置的負方向 | Step 2 未 invert（solvePnP 常見） | invert T |
+| 點雲看起來對，但換個查詢方向就錯 | Step 1 和 Step 2 同時錯（抵消） | 重新確認 parent/child 和 T 方向 |
+| Frame 完全不出現 | TF tree 斷掉 | `ros2 run tf2_tools view_frames` 確認結構 |
 
 ---
 
@@ -259,18 +344,16 @@ print(child_origin_in_parent[:3])
 
 1. **Active = 點在動；Passive = 座標系在換**，數學形式相同，語義完全不同
 2. **ROS2 TF 永遠是 passive**：`lookup_transform(A, B)` 回傳的 T 滿足 `p_A = T × p_B`
-3. **要不要 invert，用兩步判斷**：Step 1 看物理層級，Step 2 看 T 方向；兩步獨立，各自可能出錯
+3. **Step 1 和 Step 2 各自獨立出錯，症狀不同；兩個同時錯反而可能表面上正確，是最危險的情況**
 
 ---
 
 ## 附錄：Step-by-Step 對照查詢表
 
-如果讀完文章還是不確定自己的情況要怎麼處理，用這張表逐步查詢。
-
 **從哪裡開始：**
 - 不知道從哪裡起步 → 從 **[A]** 開始，依序走
 - 知道 T 的來源，但不確定方向 → 直接跳 **[D]** 做原點測試
-- 已經發布 TF，但 RViz 顯示異常 → 直接跳 **[E]** 對症查詢
+- 已經發布 TF，但顯示異常 → 直接跳 **[E]** 對症查詢
 
 ---
 
@@ -289,9 +372,9 @@ print(child_origin_in_parent[:3])
 ### B. T 方向正確（`p_parent = T × p_child`）→ 直接發布
 
 ```python
-static_tf.header.frame_id = 'parent_frame'   # 填 parent
-static_tf.child_frame_id  = 'child_frame'    # 填 child
-static_tf.transform       = T                # 直接用，不需要 invert
+static_tf.header.frame_id = 'parent_frame'
+static_tf.child_frame_id  = 'child_frame'
+static_tf.transform       = T
 ```
 
 **確認 parent/child 的層級是否和機器人物理結構一致。**
@@ -301,21 +384,18 @@ static_tf.transform       = T                # 直接用，不需要 invert
 ### C. T 方向反了（`p_child = T × p_parent`）→ 先 invert，再發布
 
 ```python
-# 通用做法：直接求逆
+# 通用做法
 T_inv = np.linalg.inv(T)
 
-# 如果 T 是 SE(3)（旋轉 + 平移的 4x4 homogeneous matrix），
-# 可以用解析公式，比 np.linalg.inv 更快且數值穩定：
-#   T     = [R  | t ]    T⁻¹ = [Rᵀ | -Rᵀt]
-#           [0  | 1 ]          [0  |  1   ]
+# SE(3) 解析公式（數值更穩定）：
 R = T[:3, :3]
 t = T[:3, 3:]
 R_inv = R.T
-t_inv = -R_inv @ t      # 注意：平移不是直接取負號，要先乘 R_inv
+t_inv = -R_inv @ t      # 平移不是直接取負號，要先乘 R_inv
 
 static_tf.header.frame_id = 'parent_frame'
 static_tf.child_frame_id  = 'child_frame'
-static_tf.transform       = T_inv            # 用 invert 後的版本
+static_tf.transform       = T_inv
 ```
 
 ---
@@ -328,41 +408,51 @@ result = T @ origin
 print("child frame 原點在 parent frame 的位置：", result[:3])
 ```
 
-- 結果和 child frame 在機器人上的**實際物理位置**吻合 → T 方向正確，進入 [B]
-- 結果是實際位置的**鏡像或負值** → T 方向反了，進入 [C]
-- 結果接近 `(0, 0, 0)` → parent/child 可能填反了，重新檢查 Step 1
+| 結果 | 代表 | 下一步 |
+|------|------|-------|
+| 和 child 的物理位置吻合 | T 方向正確 | → [B] |
+| 是物理位置的鏡像或負值 | T 方向反了 | → [C] |
+| 接近 (0, 0, 0) | parent/child 可能填反，重查 Step 1 | 交換 frame_id |
+| 數值極大或 NaN | T 本身有問題（奇異矩陣、未初始化） | 回去查 calibration 流程 |
 
 ---
 
-### E. 發布後 RViz 顯示異常 → 對症修正
+### E. 發布後顯示異常 → 對症修正
 
 ```
-症狀一：frame 出現在預期位置的鏡像點
-  → T 方向反了 → 回到 [C]，invert T
+症狀一：點雲鏡像翻轉
+  → Step 1 填反 或 Step 2 source/target 對調
+  → 先用 [D] 確認 T 方向，再決定是改 parent/child 還是 invert T
 
-症狀二：frame 出現在 base_link 原點附近（接近 0,0,0）
-  → parent/child 填反 → 交換 header.frame_id 和 child_frame_id
+症狀二：點雲出現在預期位置的負方向（如前→後、上→下）
+  → Step 2 未 invert（solvePnP 最常見）
+  → 回到 [C]，invert T
 
-症狀三：frame 完全不出現在 TF plugin
-  → 這個 frame 在 TF tree 裡是孤立的（沒有連接到主樹）
-  → 用 ros2 run tf2_tools view_frames 確認樹的結構
+症狀三：點雲看起來對，但換個查詢方向就錯
+  → Step 1 和 Step 2 同時錯互相抵消
+  → 重新從 [A] 走一遍，不要依賴表面結果
 
-症狀四：frame 位置正確，但旋轉方向怪
-  → 很可能是 optical frame 問題
-  → 參考前一篇文章：camera_depth_frame vs camera_depth_optical_frame
+症狀四：frame 完全不出現
+  → TF tree 斷掉
+  → ros2 run tf2_tools view_frames 確認結構
+
+症狀五：frame 位置正確，但旋轉方向怪
+  → optical frame 問題（camera_depth_frame vs camera_depth_optical_frame）
+  → 參考：ROS2 Frame Tree 那篇文章
 ```
 
 ---
 
 ### F. 常見情境快速對照
 
-| 情境 | Step 1（parent → child） | Step 2（需要 invert？） | 備注 |
-|------|--------------------------|------------------------|------|
+| 情境 | Step 1（parent → child） | 需要 invert？ | 備注 |
+|------|--------------------------|--------------|------|
 | ICP source=camera, target=base | base_link → camera_optical | 否 | T 方向已符合 TF 要求 |
-| OpenCV solvePnP | base_link → camera_link | **是** | solvePnP 是 active convention |
+| ICP source=base, target=camera | base_link → camera_optical | **是** | source/target 對調，T 方向反了 |
+| OpenCV solvePnP | base_link → camera_link | **是** | active convention |
 | lookup_transform 結果再發布 | 同原本的 target → source | 否 | 本來就是 TF 格式 |
-| hand-eye calibration (AX=XB)，eye-in-hand | end_effector → camera_link | 查工具文件 | 文件若說「T_cam_to_ee」→ 需要 invert；「T_ee_to_cam」→ 不需要；不確定 → 用 [D] 原點測試驗證 |
-| hand-eye calibration (AX=XB)，eye-to-hand | base_link → camera_link | 查工具文件 | 文件若說「T_cam_to_base」→ 需要 invert；「T_base_to_cam」→ 不需要；不確定 → 用 [D] 原點測試驗證 |
+| hand-eye calibration，eye-in-hand | end_effector → camera_link | 查工具文件 | 文件說「T_cam_to_ee」→ 是；「T_ee_to_cam」→ 否；不確定 → 用 [D] |
+| hand-eye calibration，eye-to-hand | base_link → camera_link | 查工具文件 | 文件說「T_cam_to_base」→ 是；「T_base_to_cam」→ 否；不確定 → 用 [D] |
 
 ---
 
