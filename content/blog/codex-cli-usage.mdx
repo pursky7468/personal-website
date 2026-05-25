@@ -1,0 +1,164 @@
+---
+title: "在 Claude Code 中呼叫 Codex CLI：跨模型 Review 工作流"
+date: 2026-05-25
+tags: [Claude Code, Codex, AI, Developer Tools, PowerShell, Windows]
+summary: 如何在 Claude Code 對話中呼叫 OpenAI Codex CLI 做跨模型 code review，以及 Windows 環境下避開 stdin 卡死與 encoding 問題的兩個關鍵手法。
+draft: false
+---
+
+Claude Code 與 Codex CLI 各自來自不同 LLM family，把兩者串起來可以做到**跨模型獨立評估**——Claude 寫完的 code / doc，讓 Codex 從另一個視角掃一遍，catch 掉 Claude self-blind 的問題。
+
+本文記錄這套工作流的實戰細節，特別是在 Windows / PowerShell 環境下容易踩的兩個坑。
+
+---
+
+## 為什麼要跨模型 Review？
+
+- **Self-blindness**：同一個模型寫的東西讓自己 review，容易看不到自己的盲點
+- **Second opinion**：替 LLM agent 寫的 doc/spec，用另一個 LLM 驗收更有說服力
+- **獨立驗證**：架構決策、API 設計的第二道確認
+
+主要用途：
+
+| 場景 | 說明 |
+| --- | --- |
+| Code review | 對 uncommitted / committed 變更做 review |
+| Doc review | spec、設計文件的一致性檢查 |
+| 客製評估 | 指定 focus 區域、驗收標準 |
+
+**不適用的場景**：需要持續對話（Codex 是 one-shot）、大量檔案掃描（`grep` 更省）、含機密資料（走 OpenAI，不同隱私邊界）。
+
+---
+
+## 鐵則：背景執行時 stdin 一定要明示 redirect
+
+這是整套工作流最重要的一條，違反它 = 任務無限卡死。
+
+`run_in_background: true` 時，子行程的 stdin 是一條**永遠不會收到 EOF 的 pipe**。Codex 偵測到 piped stdin 就一定會去讀它——就算 prompt 已經用 positional arg 傳進去，codex 還是會 drain stdin，直到 EOF。背景 pipe 沒有 EOF → **無限卡死**（task output 停在 `Reading additional input from stdin...` 或全空白）。
+
+解法只有一個，每次呼叫 codex 都把 stdin 明示 redirect：
+
+| prompt 來源 | stdin redirect |
+| --- | --- |
+| 自訂 prompt（從 stdin 讀） | `< "prompt.txt"` |
+| 內建 review（不需要 stdin） | `< NUL`（即時給 EOF） |
+
+PowerShell 5.1 沒有 `<` 運算子，所以一律包在 `cmd /c '...'` 裡執行。
+
+---
+
+## 兩種 invocation 模式
+
+### 模式 A：`codex exec`（彈性最高，自訂 review 用這條）
+
+```
+codex exec [OPTIONS] [PROMPT]
+```
+
+Prompt 當一般 agent 任務，可以在 prompt 內自由描述 scope + focus + 驗收標準。
+
+### 模式 B：`codex exec review`（內建 code review）
+
+```
+codex exec review [OPTIONS]
+```
+
+Codex 有針對 review 的 specialized prompting。Scope flag：`--uncommitted` / `--base <BRANCH>` / `--commit <SHA>`。
+
+**注意**：`codex exec review` 沒有 `-s/--sandbox`、也沒有 `-C/--cd`（實測加了會報 `error: unexpected argument '--sandbox' found`）。要客製 review prompt 一律走模式 A。
+
+---
+
+## 實際呼叫範本
+
+### 範本 1：自訂 prompt（推薦）
+
+**Step 1** — 把 prompt 寫到 UTF-8 temp 檔：
+
+```
+Write
+  file_path: C:\Users\<user>\AppData\Local\Temp\codex-prompt.txt
+  content:   <你的 prompt，可含中文>
+```
+
+**Step 2** — 背景執行：
+
+```powershell
+cmd /c 'codex exec -C "D:\path\to\repo" -s read-only -o "C:\Users\<user>\AppData\Local\Temp\codex-findings.txt" - < "C:\Users\<user>\AppData\Local\Temp\codex-prompt.txt"'
+```
+
+| Flag | 用途 |
+| --- | --- |
+| `-C "D:\path\to\repo"` | codex 工作根目錄 |
+| `-s read-only` | sandbox 政策（review 一律用這個） |
+| `-o "<file>"` | final findings 寫到這個檔 |
+| `-` | positional prompt 設成 `-`，明示「從 stdin 讀」 |
+| `< "prompt.txt"` | stdin redirect（**鐵則**） |
+
+**Step 3** — 完成通知到來後，Read `codex-findings.txt` 拿結論。
+
+### 範本 2：內建 review（快速掃描，無客製）
+
+```powershell
+Set-Location 'D:\path\to\repo'
+cmd /c 'codex exec review --uncommitted -o "C:\Users\<user>\AppData\Local\Temp\codex-findings.txt" < NUL'
+```
+
+`< NUL` 不可省——就算 review 不需要 stdin prompt，背景 stdin 仍要給 EOF。
+
+---
+
+## Windows 上的 Encoding 問題
+
+PowerShell 5.1 的 `$OutputEncoding` 預設是 **US-ASCII**，它支配「PowerShell pipe → native exe」的編碼。所以：
+
+```powershell
+# ❌ 這樣中文會變成 ???
+"我的 prompt" | codex exec -
+Get-Content prompt.txt -Encoding UTF8 | codex exec -
+```
+
+`Get-Content -Encoding UTF8` 只修「檔案 → PowerShell」這段，沒修「PowerShell → codex」這段，一樣會被 US-ASCII 截斷。
+
+正確做法：
+
+```powershell
+# ✅ cmd /c 的 < 是 byte-level redirect，UTF-8 bytes 原封不動進 codex
+cmd /c 'codex exec - < "utf8-prompt.txt"'
+```
+
+`cmd /c '... < file'` 完全繞過 `$OutputEncoding`，UTF-8 檔案 bytes 直接進 codex。
+
+如果 codex output 出現 `???` 或亂碼 → 先確認是否有用 pipe 餵 codex，改成 file redirect。
+
+---
+
+## 常見問題排查
+
+| 症狀 | 原因 | 修法 |
+| --- | --- | --- |
+| Task output 停在 `Reading additional input from stdin...` 或全空白 | stdin 沒 redirect | `cmd /c '... < "prompt.txt"'` 或 `< NUL` |
+| Prompt / output 中的中文變 `???` | 用了 pipe；PS 5.1 `$OutputEncoding` = US-ASCII | 改 `cmd /c 'codex ... < "utf8檔"'` |
+| `error: unexpected argument '--sandbox' found` | `codex exec review` 沒有 `--sandbox` | 改用模式 A `codex exec -s read-only` |
+| `error: cannot be used with [PROMPT]` | review 子命令 scope flag 與 custom prompt 互斥 | 要客製 review prompt → 改模式 A |
+| review 在非 git repo 失敗 | review 預設要 git repo | 加 `--skip-git-repo-check` 或改模式 A |
+
+---
+
+## Output 取法
+
+加了 `-o <FILE>` 就不必從 task output 大海撈 findings：
+
+1. **首選**：Read `-o` 指定的檔案——就是 codex 的 final findings，通常數十到低百行，乾淨。
+2. 想知道 codex 看了哪些檔 / reasoning → 才去讀背景 task 的 stdout（動輒 1000+ 行，用 `offset` / `limit` 分段讀）。
+
+---
+
+## 小結
+
+整套流程的關鍵只有兩點：
+
+1. **stdin 永遠用 `< file` redirect**，不要用 pipe，背景才不會卡死
+2. **Windows 上用 `cmd /c '... < file'`**，繞過 PowerShell encoding，中文才不會爛掉
+
+其他都是 flag 細節，查一次 `codex exec --help` 就夠了。
