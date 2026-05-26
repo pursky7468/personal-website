@@ -6,24 +6,6 @@ summary: Mixing row and column vector conventions across robotics and graphics l
 draft: false
 ---
 
-{/*
-  TODO（後續文章架構）
-
-  [ ] Part 2 — Active transform vs passive transform
-      核心問題：「把 point 從 A frame 移到 B frame」和「改變 coordinate basis」
-      數學可能長一樣，語義完全不同
-      常見踩坑場景：SLAM、hand-eye calibration、CAD import
-      這篇結尾加一個 hook 引導讀者
-
-  [ ] Part 3 — Type-safe coordinate systems in C#
-      設計 Transform<TFrom, TTo> phantom type
-      讓 compiler 在 compile time 保證 frame chain 合法
-      需要完整說明 generic constraint 的寫法和限制
-      這是 architecture-level，需要獨立篇幅
-
-  連結方式：Part 2 和 Part 3 在本文結語加「延伸閱讀」teaser，
-  等文章寫完再換成實際連結。
-*/}
 
 在整合視覺系統（camera）和機械臂的過程中，我遇到了一個看起來很簡單，但實際上很危險的 bug：座標轉換的向量約定不一致。這個問題不在於數學本身，而在於跨越不同領域慣例的邊界時，很容易寫出看起來正確、但語義上完全錯誤的程式碼。
 
@@ -290,9 +272,9 @@ public void FrameChaining_ColumnConvention_CorrectResult()
 
 ---
 
-**延伸閱讀（即將發布）**
+**延伸閱讀**
 
 這篇解決的是「哪個方向乘」的問題。但還有一個更深的坑在等著：
 
-- *Active transform vs passive transform* — 數學長一樣，語義完全不同。SLAM、hand-eye calibration 踩這個坑的機率比本文的 bug 還高。
-- *Type-safe coordinate systems in C#* — 用 `Transform<TFrom, TTo>` 讓 compiler 在 compile time 保證 frame chain 合法，把命名規則從人工約定升級成型別系統。
+- [*Active transform vs passive transform*](/blog/active-passive-transform-semantics) — 數學長一樣，語義完全不同。SLAM、hand-eye calibration 踩這個坑的機率比本文的 bug 還高。
+- *Type-safe coordinate systems in C#*（即將發布）— 用 `Transform<TFrom, TTo>` 讓 compiler 在 compile time 保證 frame chain 合法，把命名規則從人工約定升級成型別系統。

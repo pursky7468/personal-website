@@ -20,6 +20,13 @@ Blog 工作流由三個 agent 分工：
 3. Agent(web-layout-verifier)    → 等 Vercel 部署、截圖、檢查渲染
 ```
 
+## 執行規則
+
+- reviewer 與 layout verifier 是同一次 review 的兩個階段，**不可拆開**
+- reviewer 完成後，不等使用者確認，立刻接著跑 layout verifier
+- 兩者結果合併為一份報告，最後一起呈現給使用者
+- 單獨呼叫「review」= reviewer + layout verifier 全跑，缺一不可
+
 ## 格式規範
 
 - 副檔名一律 `.mdx`（不使用 `.md`）
