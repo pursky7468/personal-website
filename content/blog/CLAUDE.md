@@ -2,30 +2,31 @@
 
 ## Agents
 
-Blog 工作流由三個 agent 分工：
+Blog 工作流由兩個 agent + 一個 script 分工：
 
-| Agent | 職責 | 時機 |
-|---|---|---|
-| `web-content-publisher` | 來源文件 → `.mdx` + frontmatter + commit + push | 每次發佈 |
-| `web-content-reviewer` | 內容完整性、準確性、無造假 | publisher 完成後自動接 |
-| `web-layout-verifier` | Playwright 截圖、渲染/排版/亂碼檢查 | push 完成後 |
+| 步驟 | 工具 | 職責 | 時機 |
+|---|---|---|---|
+| 1 | `Agent(web-content-publisher)` | 來源文件 → `.mdx` + frontmatter + commit + push | 每次發佈 |
+| 2 | `Agent(web-content-reviewer)` | 內容完整性、準確性、無造假 | publisher 完成後自動接 |
+| 3 | `Bash: node scripts/verify-layout.js <slug>` | Playwright 截圖、渲染/排版/亂碼檢查 | reviewer 完成後自動接 |
 
 不要在主對話中直接寫 blog 內容，改用 `Agent` tool 並指定對應的 `subagent_type`。
 
 ## 標準發佈流程
 
 ```
-1. Agent(web-content-publisher)  → 寫內容、轉 .mdx、commit、push
-2. Agent(web-content-reviewer)   → 審核內容品質，回傳報告
-3. Agent(web-layout-verifier)    → 等 Vercel 部署、截圖、檢查渲染
+1. Agent(web-content-publisher)               → 寫內容、轉 .mdx、commit、push
+2. Agent(web-content-reviewer)                → 審核內容品質，回傳報告
+3. node scripts/verify-layout.js <slug>       → Playwright 截圖、檢查渲染
 ```
 
 ## 執行規則
 
-- reviewer 與 layout verifier 是同一次 review 的兩個階段，**不可拆開**
-- reviewer 完成後，不等使用者確認，立刻接著跑 layout verifier
-- 兩者結果合併為一份報告，最後一起呈現給使用者
-- 單獨呼叫「review」= reviewer + layout verifier 全跑，缺一不可
+- 三個步驟是同一次發佈的完整流程，**不可拆開**
+- 每個步驟完成後，不等使用者確認，立刻接著跑下一步
+- 三者結果合併為一份報告，最後一起呈現給使用者
+- 單獨呼叫「review」= reviewer + verify-layout script 全跑，缺一不可
+- **Layout 驗證必須用 `node scripts/verify-layout.js`，不使用 `web-layout-verifier` agent**
 
 ## 格式規範
 
