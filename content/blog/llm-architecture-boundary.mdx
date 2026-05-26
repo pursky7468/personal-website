@@ -1,0 +1,262 @@
+---
+title: "LLM 該放在哪裡：推薦系統的架構邊界"
+date: 2026-05-26
+tags: [LLM, Architecture, Recommendation System, TDD, AI]
+summary: "LLM 或 rule-based 是錯的問題。正確的問題是：在這個系統裡，邊界應該畫在哪裡？"
+draft: false
+---
+
+「用 LLM 還是 rule-based？」是錯的問題框架。
+
+正確的問題是：**在這個系統裡，邊界應該畫在哪裡？**
+
+用 outfit recommender（天氣 + 衣櫥 → 穿搭建議）作為例子，我來拆開這個邊界該怎麼畫。
+
+## 推薦系統和控制系統是不同的問題類型
+
+工程師經常犯一個錯：把「控制系統的嚴謹度」直接套到「推薦系統」。
+
+| 系統類型 | 正確答案 | 模糊性 | 驗證標準 |
+|---|---|---|---|
+| 控制系統（robot picking、CNC、PLC） | 唯一 | 不允許 | 精確度、可重現性 |
+| 推薦系統（outfit、搜尋、content feed） | 複數 | 可接受 | 偏好、滿意度、評估 |
+
+控制系統裡，「拿起螺帽的位置差 2mm」是 bug。推薦系統裡，「建議的穿搭和用戶的選擇不同」常常只是正常差異，不是失敗。
+
+這個區別很重要，因為它決定了你會選什麼樣的驗證策略——進而決定了架構。
+
+## LLM 真正強的地方——Semantic Abstraction
+
+LLM 最有價值的地方不是「取代 if-else」。
+
+是 **人類語意 → 機器約束**。
+
+例如：
+- 用戶說：「我要去一個 business casual 的晚餐，但我會走很多路」
+- Rule system：很難優雅處理這種模糊意圖。你得列舉所有 (occasion, constraint) 組合，然後寫出 priority 規則
+- LLM：提取出 `{ occasion: "business_casual", constraint: "walking_friendly", formality: 0.6 }`，直接給下游用
+
+這叫 fuzzy intent extraction。if-else 幾乎無法優雅解決。
+
+Rule system 被迫變成這樣：
+
+```csharp
+if (occasion == Occasion.BusinessCasual && hasWalkingConstraint && weather.Temp > 15)
+{
+    // 穿得正式但輕便的組合
+    return SuggestWalkableFormalOutfit();
+}
+else if (occasion == Occasion.BusinessCasual && !hasWalkingConstraint)
+{
+    // 穿得正式的組合
+    return SuggestFormalOutfit();
+}
+else if (occasion == Occasion.Casual && hasWalkingConstraint)
+{
+    // 輕便舒適的組合
+    return SuggestComfortableOutfit();
+}
+// ... 繼續爆炸
+```
+
+不優雅。容易混亂。
+
+## Production LLM 架構：不是「prompt in → output out」
+
+真正成熟的 production AI system 幾乎都長這樣：
+
+```
+用戶輸入（自然語言）
+  ↓
+LLM（semantic interpretation）
+  ↓
+structured intent（JSON schema）
+  ↓
+validator
+  ↓
+rule engine / constraint solver
+  ↓
+ranking layer
+  ↓
+executor
+```
+
+LLM 只負責其中一層（語意解析）。不是整個系統。
+
+Deterministic 的部分仍然是 deterministic 的。
+
+把 LLM 描述成「prompt in → random output out」是 strawman。真實的設計是 LLM 接近輸入端，負責把模糊的人類語言轉成清晰的機器可用格式。然後下游所有層都可以有測試、有保證、有可審計性。
+
+舉例：
+
+```csharp
+// 1. LLM semantic layer：自然語言 → 結構化意圖
+var intent = await semanticLayer.ExtractIntent(userInput);
+// intent = { occasion: "business_casual", constraints: ["walking"], formality: 0.6 }
+
+// 2. Validation layer：確保意圖合法
+if (!validator.IsValid(intent)) throw new InvalidIntentException();
+
+// 3. Constraint solver：找出滿足條件的衣服
+var candidates = constraintSolver.FindOutfits(intent, wardrobe, weather);
+
+// 4. Ranking layer：按用戶偏好排序（deterministic）
+var ranked = ranker.Rank(candidates, userPreferences);
+
+// 5. Return top-1
+return ranked.First();
+```
+
+只有第 1 層靠 LLM。其他層可以都測試、都驗證、都有保證。
+
+## Rule-based 的真實成本
+
+Rule-based 不是免費的。當規則累積時：
+
+- **Implicit priority conflict**：哪條規則優先？
+- **Hidden coupling**：改一條規則，另一條悄悄失效
+- **Conflicting constraints**：冬天正式場合走很多路，要穿什麼？同時滿足「正式」和「輕便」？
+- **Rule explosion**：`if rainy && cold && windy && formal && walking_distance > 5km && wardrobe.Count < 20`...
+
+很多 legacy MES/PLC/automation system 就是在這裡失控的。系統 20 年了，沒人敢刪規則。3000 行 rule 程式碼，幾十個互相衝突的優先級規則。
+
+這種系統實際上比一個設計良好的 LLM pipeline 更難維護。更易出 bug。診斷也更難——bug 藏在規則的交互裡，測試不出來。
+
+## 推薦系統的正確測試策略
+
+`Assert.Equal(expectedOutfit, recommender.Suggest(...))` 對推薦系統是錯的測試策略。
+
+因為它預設答案唯一。但推薦系統的正確答案本身就可能是複數的。
+
+成熟的推薦測試應該走這四條線：
+
+### 1. Constraint satisfaction（必須滿足的約束）
+
+```csharp
+// 下雨天不能推涼鞋
+var result = recommender.Suggest(rainyWeather, wardrobe);
+Assert.DoesNotContain(result.Shoes, s => s.Type == ShoeType.Sandal);
+```
+
+### 2. Property-based testing（對任意合理輸入，輸出應滿足性質）
+
+```csharp
+// 任何溫度低於 10°C 的場景，都應該包含 outer layer
+Prop.ForAll(
+    Arb.From(weatherGenerator),
+    weather =>
+    {
+        if (weather.Temperature < 10)
+        {
+            var result = recommender.Suggest(weather, wardrobe);
+            return result.HasOuterLayer;
+        }
+        return true;
+    }
+).QuickCheckThrowOnFailure();
+```
+
+### 3. Acceptance region（合理的答案集合，不是唯一答案）
+
+```csharp
+// 定義「可接受的穿搭」集合
+var acceptableOutfits = new[]
+{
+    new Outfit { Top = "sweater", Bottom = "jeans", Shoes = "sneakers", Outer = "jacket" },
+    new Outfit { Top = "thermal_base", Bottom = "cargo_pants", Shoes = "boots", Outer = "coat" },
+    new Outfit { Top = "hoodie", Bottom = "leggings", Shoes = "sneakers", Outer = "puffer_jacket" }
+};
+
+var result = recommender.Suggest(coldRainyWeather, wardrobe);
+Assert.Contains(result, acceptableOutfits);
+```
+
+### 4. Statistical evaluation（對 LLM 層的評估）
+
+```csharp
+// 對 100 個場景，LLM semantic extraction 的準確率
+var scenarios = GenerateTestScenarios(100);
+var correct = 0;
+
+foreach (var scenario in scenarios)
+{
+    var extracted = semanticLayer.ExtractIntent(scenario.UserInput);
+    var humanLabeled = scenario.ExpectedIntent;
+    
+    if (IntentMatcher.Matches(extracted, humanLabeled))
+        correct++;
+}
+
+// 期望 95% 以上的語意提取準確率
+Assert.True(correct >= 95, $"Semantic extraction accuracy: {correct}%");
+```
+
+## 設計邊界的決策框架
+
+什麼特徵的問題傾向 rule-based，什麼傾向 LLM？
+
+| 維度 | 傾向 Rule-based | 傾向 LLM |
+|---|---|---|
+| **輸入空間** | 封閉、有限、明確 | 開放、自然語言、模糊 |
+| **正確答案** | 唯一或少數 | 複數、多樣 |
+| **驗證方式** | assertion、精確度 | evaluation、acceptance region |
+| **規則數量** | 可枚舉（< 50 條） | 太多或未知 |
+| **模型更新風險** | 不可接受 | 可接受 |
+| **可解釋性需求** | 必須逐條說明 | 可接受黑箱 |
+| **典型例子** | CNC 座標計算、票券驗證 | 意圖提取、分類、去重 |
+
+關鍵：**同一個系統的不同層，可能同時落在兩欄。**
+
+這就是 hybrid architecture 的設計空間。
+
+## 實例：outfit recommender 的邊界
+
+假設整個系統長這樣：
+
+```
+層級 1: Intent extraction
+  輸入：自然語言 ("business casual, will walk a lot")
+  輸出：結構化意圖 {occasion, constraints, formality}
+  選擇：LLM
+  原因：輸入空間開放，語意模糊，難以枚舉規則
+
+層級 2: Constraint satisfaction
+  輸入：結構化意圖 + wardrobe + weather
+  輸出：合法的衣服候選集合
+  選擇：Rule-based constraint solver
+  原因：規則明確可枚舉，驗證簡單，需要完全確定性
+
+層級 3: Ranking
+  輸入：候選集合 + user preferences
+  輸出：排序結果
+  選擇：Rule-based (可選：混合小規模 ML model)
+  原因：可用簡單規則（色系偏好、品牌、價格），如複雜改 ML
+
+層級 4: Return
+  輸入：排序結果
+  輸出：最終建議
+  選擇：Deterministic (return top-1)
+  原因：執行層必須確定性，沒有模糊空間
+```
+
+這樣設計的好處：
+
+1. LLM 只在邊界（語意層）。易於隔離、易於測試、易於換模型
+2. 核心邏輯（constraint + ranking）都是可審計的、可測試的
+3. 整個系統有清晰的數據流向
+4. 出 bug 時可以逐層診斷
+
+## 結論
+
+真正有趣的問題不是「要不要用 LLM」。
+
+是：
+- **哪一層需要語意理解？** → LLM
+- **哪一層需要可審計的確定性？** → Rule-based / deterministic
+- **兩層之間的介面長什麼樣？** → Structured schema（JSON）
+
+設計好這個邊界，LLM 和 deterministic core 不是對立的，而是互補的。
+
+LLM 接近輸入端，負責把模糊變清晰。下游所有層都是確定的、可測的、可信的。
+
+這樣的系統，既有 LLM 的靈活性，也有 control system 的嚴謹度。
