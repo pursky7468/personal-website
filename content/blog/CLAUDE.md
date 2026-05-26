@@ -8,7 +8,7 @@ Blog 工作流由兩個 agent + 一個 script 分工：
 |---|---|---|---|
 | 1 | `Agent(web-content-publisher)` | 來源文件 → `.mdx` + frontmatter + commit + push | 每次發佈 |
 | 2 | `Agent(web-content-reviewer)` | 內容完整性、準確性、無造假 | publisher 完成後自動接 |
-| 3 | `Bash: node scripts/verify-layout.js <slug>` | Playwright 截圖、渲染/排版/亂碼檢查 | reviewer 完成後自動接 |
+| 3 | `Bash: node scripts/verify-layout.js <slug>` | Playwright 截圖、渲染/排版/亂碼檢查 | reviewer 完成後，等 Vercel 部署完成再執行 |
 
 不要在主對話中直接寫 blog 內容，改用 `Agent` tool 並指定對應的 `subagent_type`。
 
@@ -17,7 +17,7 @@ Blog 工作流由兩個 agent + 一個 script 分工：
 ```
 1. Agent(web-content-publisher)               → 寫內容、轉 .mdx、commit、push
 2. Agent(web-content-reviewer)                → 審核內容品質，回傳報告
-3. node scripts/verify-layout.js <slug>       → Playwright 截圖、檢查渲染
+3. node scripts/verify-layout.js <slug>       → 等 Vercel 部署完成後，Bash 直接執行
 ```
 
 ## 執行規則
