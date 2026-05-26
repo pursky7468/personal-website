@@ -1,0 +1,131 @@
+---
+title: "你不能用 Validation 解決 Semantic Ambiguity"
+date: 2026-05-26
+tags: [Architecture, LLM, AI, System Design, Software Engineering]
+summary: "指令清楚、執行完成、結果卻錯了——這不是 bug，是 semantic ambiguity 在 contract world 裡的靜默失敗。"
+draft: false
+---
+
+我請一個 AI agent「用 Playwright 確認排版是否正確」。
+
+Agent 執行了。回傳了 PASS。沒有任何錯誤訊息。
+
+但它沒有真正打開瀏覽器截圖——它把任務折疊成「跑完 layout verifier → 得到報告」就結束了。
+
+指令清楚。執行完成。結果卻錯了。
+
+沒有人報錯，因為從系統的角度看，一切都對。
+
+這不是 bug。這是 semantic ambiguity 在 contract world 裡的靜默失敗。
+
+## 為什麼沒有人報錯？
+
+「用 Playwright 確認排版」是一個 semantic instruction——它帶有意圖：打開瀏覽器、截圖、用眼睛確認。
+
+但 agent pipeline 把它處理成 contract：layout verifier 有跑 → 有 PASS/FAIL → 任務完成。
+
+Validation layer 通過了。但語意從來沒有被正確翻譯。
+
+問題不在任何一個環節失敗，而是 semantic ambiguity 在進入 execution 之前，從來沒有被明確翻譯成 contract。它靜靜地帶著歧義通過了每一層。
+
+## Deterministic System 的本質是 Contract
+
+Deterministic system 建立在一個根本假設上：
+
+```
+相同的 input
+→ 相同的 output
+→ 可追蹤的失敗
+→ 可解釋的推理
+```
+
+這是 contract。
+
+Contract 的力量在於：當它失敗時，你知道哪裡失敗了，為什麼失敗。整個系統的可靠性建立在這個可追蹤性上。
+
+Rule-based system、API schema、型別系統、unit test——這些都是 contract 的不同形式。它們的共同點是：**ambiguity 不被允許進入**。
+
+## Semantic Interpretation 的本質是 Meaning Negotiation
+
+語意解釋不是 contract。它是 meaning negotiation。
+
+「用 Playwright 確認排版」這句話沒有唯一正確的解釋。它的意思取決於：
+- 說話者的意圖
+- 接收者的背景知識
+- 當下的 context
+- 雙方對「確認」這個詞的共識
+
+這不是 bug，是語言的本質。
+
+Semantic system 活在 ambiguity 裡。Contract system 假設 ambiguity 不存在。
+
+這兩者不只是不同的技術選擇——**它們是兩種不同的認識論**。
+
+## 你不能用 Validation Layer 解決它
+
+很多人的直覺反應是：加更多 validation。
+
+但 validation 只能檢查 contract 有沒有被滿足。它無法填補 semantic gap，因為它不知道 semantic gap 存在。
+
+在 Playwright 的例子裡：
+- 加一個 validation 確認 agent 有執行 ✓
+- 加一個 validation 確認有回傳 PASS/FAIL ✓
+- 加一個 validation 確認截圖檔案存在 ✓
+
+但這些都沒有問：「你執行的，是我真正要求的嗎？」
+
+**Validation 只能驗證 contract 的執行。它無法翻譯 semantic intention。**
+
+你需要的不是更多 validation，而是一個明確的 **semantic-to-contract translation layer**。
+
+## Translation Layer 長什麼樣
+
+Translation layer 的工作是：在 semantic instruction 進入 execution 之前，把它轉換成明確的 contract。
+
+以 Playwright 的例子，translation layer 會把：
+
+> 「用 Playwright 確認排版是否正確」
+
+轉換成：
+
+```
+1. 啟動 browser instance
+2. 導航到目標 URL
+3. 截圖並儲存
+4. 驗證 table selector 存在且可見
+5. 驗證 code block 有 syntax highlighting class
+6. 把截圖路徑回傳到主對話
+```
+
+這個 contract 是可以被 validated 的。更重要的是：**它讓 semantic gap 顯形**——如果翻譯錯了，錯誤會發生在 translation layer，而不是靜默地消失在 execution 裡。
+
+## 這不只是 LLM 的問題
+
+這個衝突出現在任何「人類意圖遇上系統執行」的邊界：
+
+- LLM agent 接受自然語言指令
+- Recommendation system 接受模糊偏好
+- Autonomous system 接受高層目標
+- 任何 API 接受人類設計的 schema
+
+每一個邊界都是 semantic world 和 contract world 的接縫。
+
+現在這個邊界正在變得越來越普遍，因為我們在快速地把 semantic instruction 餵給 system execution——LLM、AI agent、自動化工具——但我們沒有意識到這兩個世界的本質差異。
+
+| Semantic World | Contract World |
+|---|---|
+| 意圖（Intent） | 規格（Spec） |
+| 語意（Meaning） | 型別（Type） |
+| 偏好（Preference） | 約束（Constraint） |
+| 模糊（Ambiguity） | 確定（Determinism） |
+| 詮釋（Interpretation） | 執行（Execution） |
+
+## 結論
+
+Playwright 的失敗不是技術問題。是架構問題。
+
+Semantic ambiguity 不會在 validation layer 被攔截，因為 validation 只看 contract。它會靜靜地通過，帶著錯誤的解釋一路執行到底，產生一個看起來成功、實際上錯的結果。
+
+解法不是更多 validation。是讓 translation layer 顯形——讓語意到合約的轉換成為一個明確的、可審計的步驟，而不是每個系統元件各自猜測對方的意圖。
+
+這是下一代軟體架構真正難的地方：不是讓 LLM 更準確，而是設計一個能夠承接 semantic world 和 contract world 之間根本衝突的邊界。
