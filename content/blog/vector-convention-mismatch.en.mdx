@@ -7,59 +7,59 @@ draft: false
 ---
 
 
-在整合視覺系統（camera）和機械臂的過程中，我遇到了一個看起來很簡單，但實際上很危險的 bug：座標轉換的向量約定不一致。這個問題不在於數學本身，而在於跨越不同領域慣例的邊界時，很容易寫出看起來正確、但語義上完全錯誤的程式碼。
+While integrating a vision system (camera) with a robot arm, I ran into a bug that looks simple on the surface but is genuinely dangerous: inconsistent vector conventions in coordinate transforms. The problem isn't in the math itself — it's that crossing the boundary between conventions from different domains makes it easy to write code that looks correct but is semantically completely wrong.
 
-## 背景：整合視覺和機械臂系統
+## Background: Integrating vision and robot arm systems
 
-現在的專案需要：
-- 相機拍攝工作台上的物體
-- 檢測物體位置和姿態
-- 指示機械臂去拿取
+The project requires:
+- Capturing objects on a worktable with a camera
+- Detecting object positions and orientations
+- Commanding the robot arm to pick them up
 
-這涉及三個座標系：
-- **Camera frame (c)** — 相機的視角
-- **Robot base frame (r)** — 機械臂基座
-- **Arm end-effector frame (a)** — 夾爪
+This involves three coordinate frames:
+- **Camera frame (c)** — the camera's perspective
+- **Robot base frame (r)** — the robot arm's base
+- **Arm end-effector frame (a)** — the gripper
 
 ```
-向量轉換路徑：
+Vector transform path:
 
   [Arm (a)] ──r_T_a──► [Robot (r)] ──c_T_r──► [Camera (c)]
       └──────────────────── c_T_a ───────────────────►
 
-  箭頭方向 = 向量的轉換方向（從 source frame 到 destination frame）
+  Arrow direction = transform direction (from source frame to destination frame)
 ```
 
-## Column Vector Convention（標準機器人學約定）
+## Column Vector Convention (standard robotics convention)
 
-機器人學（Craig、Spong 教科書）用 column vector convention：
+Robotics textbooks (Craig, Spong) use column vector convention:
 
-向量為列向量，transform matrix **左乘**向量：
+Vectors are column vectors; the transform matrix **left-multiplies** the vector:
 
 ```
 v' = T * v
 ```
 
-命名約定是 `{destination frame}_T_{source frame}`，例如 `c_T_r` 表示「把 robot frame 的向量帶到 camera frame」的 transform。
+The naming convention is `{destination frame}_T_{source frame}` — for example, `c_T_r` means "the transform that brings vectors from the robot frame to the camera frame."
 
-Frame chaining 的規則（cancellation rule）：
+Frame chaining (cancellation rule):
 
 ```
 c_v = c_T_r * r_T_a * a_v
 ```
 
-消去規則：當兩個矩陣相鄰，**左矩陣的 source frame = 右矩陣的 destination frame**，中間的 frame 消去：
+The cancellation rule: when two matrices are adjacent, **left matrix's source frame = right matrix's destination frame**, the middle frame cancels:
 
 ```
   c_T_r  *  r_T_a
   ───┬──    ──┬──
-     └── r ──┘   ← 相鄰的 r 消去
+     └── r ──┘   ← adjacent r cancels
          │
          ▼
        c_T_a
 ```
 
-任意長度的 chain 依序消去：
+Chains of any length cancel in sequence:
 
 ```
   c_T_r  *  r_T_b  *  b_T_a
@@ -70,126 +70,126 @@ c_v = c_T_r * r_T_a * a_v
                c_T_a
 ```
 
-## Row Vector Convention（圖形學和 OpenTK）
+## Row Vector Convention (graphics and OpenTK)
 
-OpenTK（C#/.NET 圖形數學庫）用 row vector convention：
+OpenTK (C#/.NET graphics math library) uses row vector convention:
 
-向量為行向量，transform matrix **右乘**向量：
+Vectors are row vectors; the transform matrix **right-multiplies** the vector:
 
 ```
 v' = v * T
 ```
 
-這導致 frame chaining 的乘法順序和 column convention **完全相反**。
+This makes the frame chaining multiplication order **completely reversed** from column convention.
 
-| 動作 | Column convention | Row convention (OpenTK) |
-|------|-------------------|-------------------------|
-| 向量應用 transform | `v' = T * v` | `v' = v * T` |
-| Frame chaining（同樣命名） | `C_T_A = C_T_B * B_T_A` | `C_T_A = B_T_A * C_T_B` |
+| Operation | Column convention | Row convention (OpenTK) |
+|-----------|-------------------|-------------------------|
+| Apply transform to vector | `v' = T * v` | `v' = v * T` |
+| Frame chaining (same naming) | `C_T_A = C_T_B * B_T_A` | `C_T_A = B_T_A * C_T_B` |
 
-Row convention 的消去規則方向**相反**：**左矩陣的 destination frame = 右矩陣的 source frame** 時消去：
+The row convention cancellation rule runs in the **opposite direction**: cancellation occurs when **left matrix's destination frame = right matrix's source frame**:
 
 ```
-  B_T_A  *  C_T_B    ← row convention（同樣的 {dest}_T_{src} 命名）
+  B_T_A  *  C_T_B    ← row convention (same {dest}_T_{src} naming)
   ─┬───     ─┬───
-   └─── B ───┘   ← 這次是左矩陣的 dest 對右矩陣的 src
+   └─── B ───┘   ← left matrix's dest matches right matrix's src
         │
         ▼
       C_T_A
 ```
 
-消去方向反轉的根本原因：若 `M_row = M_col^T`，轉置代數保證
+The underlying mathematical reason for the reversed cancellation: if `M_row = M_col^T`, the transpose algebra guarantees:
 
 ```
   column:  A_col * B_col
-                ↓ 兩側取轉置
-  row:     B_row * A_row   （順序自動反轉）
+                ↓ transpose both sides
+  row:     B_row * A_row   (order automatically reverses)
 
-  因為 (A * B)^T = B^T * A^T
+  because (A * B)^T = B^T * A^T
 ```
 
-所以在 row convention 中寫 frame chain，乘法順序與 column convention 的**視覺上完全相反**，但表達的幾何意義相同。
+So writing a frame chain in row convention, the multiplication order is **visually the complete reverse** of column convention, yet expresses the same geometric meaning.
 
-## 重要區分：Vector Convention vs Memory Layout
+## Important distinction: Vector Convention vs Memory Layout
 
-這是這個領域最常見的混淆，值得單獨說清楚。
+This is the most common source of confusion in this domain, worth addressing separately.
 
-先釐清一個前提：**OpenTK 的 Matrix4 本身只是一個容器**，16 個 float 的儲存空間，沒有強制任何 convention。Convention 是你選擇的工具帶進來的：
+One premise to establish first: **OpenTK's Matrix4 is just a container** — 16 floats of storage, with no enforced convention. Convention is brought in by the tools you choose:
 
-- **OpenTK 的 built-in 建立函式**（`Matrix4.CreateTranslation`、`Matrix4.CreateRotationX` 等）按 row convention 填入元素，例如 translation 放在 Row3（最後一行），而不是 column convention 的最後一列
-- **`*` 運算子**是純數學的標準矩陣乘法，不屬於任何 convention。兩個 column convention 矩陣用 `*` 相乘，得到正確的 column convention 合成結果；兩個 row convention 矩陣相乘，同樣正確
-- **`Vector4.Transform(v, M)`** 執行的是 `v * M`（row convention 的向量應用）
+- **OpenTK's built-in creation functions** (`Matrix4.CreateTranslation`, `Matrix4.CreateRotationX`, etc.) fill elements in row convention — translation goes in Row3 (the last row), not the last column as in column convention
+- **The `*` operator** is pure standard matrix multiplication with no inherent convention. Multiplying two column-convention matrices gives the correct column-convention composition; multiplying two row-convention matrices is equally correct
+- **`Vector4.Transform(v, M)`** executes `v * M` (row convention vector application)
 
-真正的危險是**混合不同 convention 的矩陣**：用 OpenTK built-in 函式建的矩陣（row convention）和手動填的矩陣（column convention）一旦 `*` 在一起，結果就是錯的，因為兩個矩陣的元素排列意義不同。問題不是 `*` 強制 row convention，而是不一致本身。
+The real danger is **mixing matrices from different conventions**: a matrix built with OpenTK's built-in functions (row convention) and one filled manually (column convention), once multiplied with `*`, gives the wrong result because the element arrangements have different meanings. The problem isn't that `*` enforces row convention — it's the inconsistency itself.
 
-| 概念 | 定義 | 影響 |
-|------|------|------|
-| **Row/column vector convention** | 向量是 row 還是 column，決定 transform 左乘還是右乘 | 乘法語義、乘法順序、frame chaining 方向 |
-| **Row/column major (memory layout)** | 矩陣元素在記憶體中的排列順序（哪個 index 連續存放） | 記憶體存取效率，**不影響乘法語義** |
+| Concept | Definition | Effect |
+|---------|------------|--------|
+| **Row/column vector convention** | Whether vectors are rows or columns, determining whether transforms left- or right-multiply | Multiplication semantics, multiplication order, frame chaining direction |
+| **Row/column major (memory layout)** | How matrix elements are arranged in memory (which index is contiguous) | Memory access efficiency — **does not affect multiplication semantics** |
 
-兩者沒有必然關聯。Row vector convention 的庫不一定用 row-major storage，反之亦然。
+The two have no necessary connection. A library using row vector convention doesn't necessarily use row-major storage, and vice versa.
 
-OpenTK 剛好同時使用兩者，但造成「乘法順序差異」和「rotation 需要轉置」的原因只有 **row vector convention**，不是 memory layout。如果有人說「OpenTK 需要轉置是因為 row-major」，他混淆了這兩件事。
+OpenTK happens to use both row-vector convention and row-major layout, but the reason for the "multiplication order difference" and "rotation needs transposing" is solely **row vector convention** — not memory layout. Anyone claiming "OpenTK needs transposing because of row-major" is conflating the two.
 
 ```
-row-major storage:  控制 M[0][1] 在記憶體中的位置
-row vector conv.:   決定 v' = v * M 還是 v' = M * v  ← 這個才是重點
+row-major storage:  controls where M[0][1] sits in memory
+row vector conv.:   determines v' = v * M vs v' = M * v  ← this is what matters
 ```
 
-## 問題根源：混淆向量約定
+## The bug: mixing vector conventions
 
-問題程式碼：
+The problematic code:
 
 ```csharp
 Matrix4 c_T_r = GetCameraFromRobotTransform();
 Matrix4 r_T_a = GetRobotFromArmTransform();
 
-var c_T_a = c_T_r * r_T_a;  // 編譯過，命名對，cancellation rule 驗也過——但結果是錯的
+var c_T_a = c_T_r * r_T_a;  // compiles, naming looks right, cancellation rule checks out — but the result is wrong
 ```
 
-這個 bug 真正危險的地方是：它通過了所有你平常會做的檢查。
+What makes this bug genuinely dangerous is that it passes every check you'd normally perform:
 
-- **命名**：`c_T_r * r_T_a`，符合 `{dest}_T_{src}` 約定 ✓
-- **Cancellation rule**：r 消去，結果是 `c_T_a` ✓
-- **Compiler**：Matrix4 乘 Matrix4，沒有錯誤 ✓
-- **執行期**：不 crash，回傳一個看起來合理的矩陣 ✓
+- **Naming**: `c_T_r * r_T_a` matches `{dest}_T_{src}` convention ✓
+- **Cancellation rule**: r cancels, result is `c_T_a` ✓
+- **Compiler**: Matrix4 times Matrix4, no errors ✓
+- **Runtime**: no crash, returns a seemingly plausible matrix ✓
 
-只有最後拿去用的時候，機械臂位置偏了，才知道有問題。
+You only discover there's a problem when the robot arm arrives at the wrong position.
 
-**根本原因**：OpenTK 的 `*` 運算子實作的是 row convention 的矩陣乘法。你寫的是 column convention 的乘法順序，但 OpenTK 用 row convention 執行，兩者語義不同，結果不同。
+**Root cause**: OpenTK's `*` operator implements row-convention matrix multiplication. You wrote column-convention multiplication order, but OpenTK executed it with row convention — different semantics, different result.
 
-正確做法是透過 helper 明確標記 convention：
+The correct approach is to use a helper that makes the convention explicit:
 
 ```csharp
-// Cancellation rule 依然成立：c_T_r * r_T_a → r 消去 → c_T_a ✓
-// 但這裡的 * 是 column convention 語義的乘法，不是 OpenTK 的原生 *
+// Cancellation rule still holds: c_T_r * r_T_a → r cancels → c_T_a ✓
+// But this * is column-convention semantics, not OpenTK's native *
 var c_T_a = ColumnVectorTransforms.Compose(c_T_r, r_T_a);
 ```
 
-## 實際程式碼範例
+## Concrete code examples
 
-### 錯誤版本（在 OpenTK 中直接用 column convention 的乘法順序）
+### Wrong version (using column convention multiplication order directly in OpenTK)
 
 ```csharp
 Matrix4 c_T_r = GetCameraFromRobotTransform();
 Matrix4 r_T_a = GetRobotFromArmTransform();
 
-// 命名正確、cancellation rule 通過、compiler 過——但 OpenTK 用 row convention 執行
-// 實際計算的不是 c_T_r * r_T_a（column convention），而是 row convention 的矩陣積
-// 兩者數值不同，機械臂拿到的位置會錯
+// Naming correct, cancellation rule passes, compiler happy — but OpenTK executes in row convention
+// What's actually computed is not c_T_r * r_T_a (column convention) but a row-convention matrix product
+// Different numbers, robot arm arrives at wrong position
 var c_T_a = c_T_r * r_T_a;
 ```
 
-### 正確版本（使用公司的 Column Vector Helper）
+### Correct version (using a column vector helper)
 
 ```csharp
 public static class ColumnVectorTransforms
 {
     /// <summary>
-    /// 在 OpenTK row convention 環境中建立 column convention 語義的 Matrix4。
-    /// OpenTK 用 row vector convention（v' = v * M），其中 axis vectors 是 rows。
-    /// Column convention 的旋轉矩陣 R 其 axis vectors 是 columns，
-    /// 放入 OpenTK 時需要轉置為 R^T，使 v' = v * R^T 等價於 v' = R * v。
+    /// Creates a Matrix4 with column convention semantics in an OpenTK row convention environment.
+    /// OpenTK uses row vector convention (v' = v * M), where axis vectors are rows.
+    /// A column-convention rotation matrix R has axis vectors as columns;
+    /// stored in OpenTK it must be transposed to R^T, so v' = v * R^T is equivalent to v' = R * v.
     /// </summary>
     public static Matrix4 Create(Vector3 translation, Matrix3 rotation)
     {
@@ -197,84 +197,89 @@ public static class ColumnVectorTransforms
     }
 
     /// <summary>
-    /// 按 column convention 語義合成兩個 transforms：Compose(A, B) = A * B。
-    /// 數學原理：column convention 的 A_col * B_col，在 row convention 中等價於
-    /// B_row * A_row，因為 (A_col * B_col)^T = B_col^T * A_col^T = B_row * A_row。
-    /// 轉置關係使乘法順序自動反轉，所以實作為 rhs * lhs。
+    /// Composes two transforms with column convention semantics: Compose(A, B) = A * B.
+    /// Math: column convention A_col * B_col, in row convention equals
+    /// B_row * A_row, because (A_col * B_col)^T = B_col^T * A_col^T = B_row * A_row.
+    /// The transpose relationship automatically reverses multiplication order, so implemented as rhs * lhs.
     /// </summary>
     public static Matrix4 Compose(Matrix4 lhs, Matrix4 rhs)
     {
-        // 對應 column convention: lhs * rhs
+        // corresponds to column convention: lhs * rhs
         return rhs * lhs;
     }
 }
 
-// 使用方式
+// Usage
 var c_T_r = ColumnVectorTransforms.Create(trans_cam, rot_cam);
 var r_T_a = ColumnVectorTransforms.Create(trans_arm, rot_arm);
 
-// c_T_a = c_T_r * r_T_a（column convention 語義）
-// Cancellation rule 驗證：c_T_r * r_T_a → r 消去 → c_T_a ✓
+// c_T_a = c_T_r * r_T_a (column convention semantics)
+// Cancellation rule check: c_T_r * r_T_a → r cancels → c_T_a ✓
 var c_T_a = ColumnVectorTransforms.Compose(c_T_r, r_T_a);
 ```
 
-## 為什麼這個 Bug 難發現
+## Why this bug is hard to find
 
-所有平常會做的靜態檢查全部通過：
+Every static check you'd normally perform passes:
 
-- **命名**：`{dest}_T_{src}` 約定沒有違反
-- **Cancellation rule**：手動驗一遍，r 消去，結果是 `c_T_a`，看起來對
-- **Compiler**：Matrix4 * Matrix4，型別完全合法
-- **執行期**：不 crash，矩陣數值看起來合理
+- **Naming**: `{dest}_T_{src}` convention is not violated
+- **Cancellation rule**: manually verify, r cancels, result is `c_T_a`, looks right
+- **Compiler**: Matrix4 * Matrix4, types are completely legal
+- **Runtime**: no crash, matrix values look reasonable
 
-唯一能抓到這個 bug 的是：知道 OpenTK 的 `*` 是 row convention，**或者**有一個驗證 frame chaining 合成結果的測試。
+The only way to catch this bug is either knowing that OpenTK's `*` is row convention, **or** having a test that verifies the composed result of frame chaining.
 
-## 解決策略
+## Solution strategies
 
-**1. 清晰邊界層**
+**1. Clear boundary layer**
 
-一個 module 或 static class 專門負責兩種約定的橋接，所有 robotics coordinate 運算都經過它。這個 class 的存在本身就是一個信號：「這裡我們用 column convention 的思維」。
+A single module or static class handles the bridging between conventions; all robotics coordinate operations go through it. The very existence of this class is a signal: "here we think in column convention."
 
-**2. 命名和 Cancellation Rule 作為第一道防線**
+**2. Naming and Cancellation Rule as first line of defense**
 
-每次寫 transform chain，先用 cancellation rule 驗：`c_T_r * r_T_a` → r 消去 → 得到 `c_T_a`，符合預期才繼續。一旦驗不出來（例如 `c_T_r * r_T_c` → 得到 `c_T_c`，不對），就是有問題。
+Every time you write a transform chain, verify with the cancellation rule first: `c_T_r * r_T_a` → r cancels → gives `c_T_a`, matches expectation. If it doesn't verify (e.g., `c_T_r * r_T_c` → gives `c_T_c`, wrong), something's off.
 
-**3. Frame Chaining 測試**
+**3. Frame chaining tests**
 
 ```csharp
 [Fact]
 public void FrameChaining_ColumnConvention_CorrectResult()
 {
-    // 三個座標系，已知相對位置
-    var c_T_r = ColumnVectorTransforms.Create(new Vector3(1, 0, 0), Matrix3.Identity);
+    // c_T_r: camera rotated 90° around Z, translated (1, 0, 0) from robot
+    var rot90Z = Matrix3.CreateRotationZ(MathHelper.PiOver2);
+    var c_T_r = ColumnVectorTransforms.Create(new Vector3(1, 0, 0), rot90Z);
+    // r_T_a: arm translated (0, 1, 0) from robot origin, no rotation
     var r_T_a = ColumnVectorTransforms.Create(new Vector3(0, 1, 0), Matrix3.Identity);
 
     var c_T_a = ColumnVectorTransforms.Compose(c_T_r, r_T_a);
 
-    // arm 在 camera frame 的位置應為 (1, 1, 0)
-    Assert.Equal(new Vector3(1, 1, 0), c_T_a.ExtractTranslation());
+    // Column convention composition: c_p = t_c + R_c * t_r
+    // rot90Z rotates r_T_a's translation (0, 1, 0) → (-1, 0, 0)
+    // Final: (1, 0, 0) + (-1, 0, 0) = (0, 0, 0)
+    // The buggy version (OpenTK's * in wrong order) yields (1, 1, 0) — a clear failure
+    Assert.Equal(Vector3.Zero, c_T_a.ExtractTranslation());
 }
 ```
 
-不只測單個 transform，驗 frame chaining 的合成結果才能發現這類 bug。
+Test not just individual transforms, but the composed result of frame chaining — and use non-identity rotations so the wrong multiplication order produces a distinct, failing result.
 
-## 結語
+## Conclusion
 
-向量約定不是抽象的數學細節。跨越不同領域的庫時，它成為很實際的工程問題。
+Vector conventions aren't abstract mathematical details. Crossing library boundaries between domains makes them a very real engineering problem.
 
-**關鍵經驗：**
+**Key takeaways:**
 
-- **Row-major storage 和 row vector convention 是兩件不同的事**：前者是記憶體佈局，後者是數學約定，後者才是乘法順序差異的根本原因
-- **Cancellation rule 是最快的自我驗證工具**：每次寫 transform chain 就驗一次，錯誤在鍵盤上就能攔截
-- **在混合約定的邊界上建立清晰、可測試的轉換層**，比聰明的 one-liner 更重要
+- **Row-major storage and row vector convention are two different things**: the former is memory layout, the latter is mathematical convention — and only the latter causes multiplication order differences
+- **The cancellation rule is the fastest self-verification tool**: verify every transform chain as you write it; errors get caught at the keyboard
+- **Build a clear, testable conversion layer at the boundary where conventions mix** — that's more valuable than clever one-liners
 
-把約定明確化，bug 自己會浮出來。
+Make conventions explicit and the bugs surface on their own.
 
 ---
 
-**延伸閱讀**
+**Further reading**
 
-這篇解決的是「哪個方向乘」的問題。但還有一個更深的坑在等著：
+This post addresses "which direction to multiply." But there's a deeper pitfall waiting:
 
-- [*Active transform vs passive transform*](/blog/active-passive-transform-semantics) — 數學長一樣，語義完全不同。SLAM、hand-eye calibration 踩這個坑的機率比本文的 bug 還高。
-- *Type-safe coordinate systems in C#*（即將發布）— 用 `Transform<TFrom, TTo>` 讓 compiler 在 compile time 保證 frame chain 合法，把命名規則從人工約定升級成型別系統。
+- [*Active transform vs passive transform*](/en/blog/active-passive-transform-semantics) — same math, completely different semantics. SLAM and hand-eye calibration hit this one far more often than the bug in this post.
+- *Type-safe coordinate systems in C#* (coming soon) — using `Transform<TFrom, TTo>` to let the compiler guarantee frame chain validity at compile time, elevating the naming convention from a manual agreement to a type system guarantee.

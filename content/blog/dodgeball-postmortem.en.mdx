@@ -1,0 +1,599 @@
+---
+title: "All Tests Green, Game Completely Broken: A Complete Dodgeball Game Post-Mortem"
+date: 2026-05-06
+tags: [Game Development, Testing, Specification, Phaser, TypeScript, Post-Mortem]
+summary: A 12-phase game development project — all tests passing, fully deployed — where the client found three core problems within 30 seconds of first play. Analysis of where errors first appeared, why they weren't caught earlier, and how to prevent them.
+draft: false
+---
+
+## Prologue: The blind spot in test-based acceptance
+
+In May 2026, a top-down dodgeball game developed with Phaser + TypeScript was deployed. 12 phases of linear development over 11 months; all unit tests passing; 100% E2E automation coverage; two rounds of manual smoke test sign-off; client received a deployable game.
+
+The client opened the game and played for 30 seconds.
+
+The game was immediately halted. Three fatal problems listed:
+
+1. Almost all balls on the field were in enemy possession — our team had no effective ball control
+2. My teammates weren't taking any action — three friendly characters on screen, all standing completely still
+3. No health bars visible for any character
+
+These were core game mechanics. They should have been caught when Phase 4 (Classes, Skills & HUD) was completed.
+
+Or at the very latest in Phase 5 (Enemy AI).
+
+Or at the absolute latest by Phase 11 before deployment.
+
+But none of them were caught. A systemic problem that passed every layer of testing, until a pair of human eyes watched the game being played.
+
+This post answers: **where did errors first occur? Why weren't they caught? How do you prevent this?**
+
+---
+
+## Part 1: The invisible decisions in spec writing
+
+Every story begins with a document.
+
+`spec.md` was written in GDD (Game Design Document) style. It answered the Game Design question: "What features does this game have?"
+
+- Characters have HP; HP reaching zero causes death
+- Players can pick up balls and throw them at enemies or teammates
+- Uncontrolled characters act autonomously via AI
+- Each skill has cooldown and hit detection logic
+
+But it didn't answer the Product Requirements question: "What should the player see and feel sitting in front of the screen?"
+
+The GDD says "health bar system (player & enemies)."
+
+A PRD should say:
+
+> Players can see the HP of all surviving characters at any time, displayed as a red bar above each character's head at 20px offset, 50px wide, with percentage shown as white 14pt text at the bar's end, updating within 0.1 seconds of taking damage; when HP reaches zero the bar disappears and the character plays a death animation.
+
+Both appear to say the same thing. But the first is a function signature; the second is a user experience specification. The first tells the engineer "implement this feature"; the second tells the engineer "go verify what the player can see."
+
+Nobody asked after the spec was finalized: "Who is this document's audience?"
+
+The GDD was silently treated as a PRD. This decision was never explicitly made — it happened by default.
+
+A second invisible structural problem: `spec.md`'s Key Mechanics Checklist had 20 items. Visually they looked like acceptance criteria:
+
+```markdown
+- [ ] Health bar system (player & enemies)
+- [ ] Ball physics and collision detection
+- [ ] Character AI (enemies)
+- [ ] ...
+```
+
+Checkbox format carries the visual suggestion of "acceptance checklist." But the phrasing was entirely feature names (feature list), not acceptance conditions (acceptance criteria).
+
+A list with checkboxes reads like standards that can be ticked off. In reality every one was vague. This visual deception created ripples in the subsequent impl-plan design.
+
+A third omission: for friendly teammate AI, the entire spec had one sentence:
+
+> Uncontrolled characters act autonomously
+
+Buried in the "Character Switching" explanation section, not in the Key Mechanics Checklist, with no behavioral spec defined. Nobody specified when AI should move, when to throw, how to select targets.
+
+This is like saying "the building should be safe" in architectural specs and assuming structural engineers will automatically derive the beam specifications.
+
+---
+
+## Part 2: The impl-plan's structural failures
+
+`impl-plan.md` should have corrected the spec's deficiencies — instead it amplified them.
+
+### Blurred boundary between HTML Overlay and test bridge layer
+
+impl-plan detailed an "HTML Overlay" system as a bridge layer between Playwright E2E tests and game logic:
+
+```html
+<div class="overlay-item" data-testid="char-hp-{id}" data-value="75" data-max="100"></div>
+<div class="overlay-item" data-testid="skill-cooldown-{id}" data-value="3000"></div>
+```
+
+The spec listed contracts for 15 `data-attribute`s, each clearly defining: existence conditions, value units, update timing. Excellent test specification.
+
+But the spec never stated: **this is a test bridge layer, not a HUD implementation**.
+
+Result:
+
+- `GameScene.ts`'s `createOverlayElements()` method produced these `<div>`s, but with no width, height, background color, or border
+- `GameUIScene.ts` had only one placeholder line `this.add.text(640, 20, 'HUD', ...)`, with no actual health bars, cooldown indicators, or score display
+- These empty shells passed all Playwright E2E tests
+
+Why did they pass? Because Playwright tests only verified whether `data-attribute`s existed and whether values were correct:
+
+```typescript
+await expect(page.locator('[data-testid="char-hp-0"]')).toHaveAttribute('data-value', '75');
+```
+
+This tested data — it didn't test presentation.
+
+The impl-plan's HTML Overlay section should have included a warning:
+
+> This spec defines a data-layer contract for test verification of logic correctness. HTML Overlay elements are not visible; this data must be transformed in GameUIScene into visually perceivable elements for players (health bars, cooldown bars, score panel). Tests passing ≠ UI complete.
+
+Nobody wrote that line. Playwright tests went green, and everyone assumed "HUD complete."
+
+### Linear phase ordering created a playability crisis
+
+impl-plan defined 12 Phases (Phase 0–11), strictly linearly dependent. Elements needed for playability were scattered across multiple phases:
+
+| Phase | Content | Playability impact |
+|-------|---------|-------------------|
+| 2 | Basic Game Loop | Characters can move |
+| 3 | Ball System | Can pick up balls |
+| 4 | Classes, Skills & HUD | **Should see health bars** |
+| 5 | Enemy AI | Enemies move |
+| 6 | Game Flow | Win/loss conditions |
+
+After Phase 4, theoretically the game should be "first playable" — move, throw, see damage, see health bars.
+
+But impl-plan defined no Phase as a "minimum viable playability milestone." Every Phase's DoD (Definition of Done) was an independent engineering metric; none required "game must be fully playable at this point."
+
+Result: when Phase 4 completed, the game was "complete" in engineering terms (all logic passes tests), but "broken" in player terms (health bars invisible).
+
+Nothing anywhere said "this doesn't count as done."
+
+### DoD designed as a tool checklist
+
+Each Phase's standard DoD:
+
+1. `npm run typecheck` passes
+2. `npm run test:unit` passes, coverage > 80%
+3. `npm run test:e2e` passes
+4. `npm run build` passes
+5. Manual Smoke Test
+
+The first four are outputs of engineering tools. Item 5, "Manual Smoke Test," had no corresponding checklist — just an empty category.
+
+Like a hotel cleaning checklist:
+
+- Toilet brush used (mechanical verification)
+- Floor vacuumed (mechanical verification)
+- Bed made (mechanical verification)
+- Manual check (… check what?)
+
+If "manual check" has no explicit item list, it has no real binding power. The inspector can walk in, glance around, check the box, without reading any checklist items.
+
+---
+
+## Part 3: The missed opportunity at Phase 4
+
+Phase 4 (Classes, Skills & HUD) was the first moment in game development when "there should be UI."
+
+Deliverables:
+
+- `CharacterClass.ts` ✅
+- `Skill.ts` and five concrete skill classes ✅
+- `GameUIScene.ts` skeleton ✅
+- HTML Overlay's `data-attribute`s ✅
+- 60+ Playwright E2E tests ✅
+
+Code Review passed, all tests green. PR merged.
+
+Nobody asked: "Open the game now — can you see health bars?"
+
+If they had, the answer would be "no." `GameUIScene.ts` had only one placeholder line.
+
+But nobody asked. Because Smoke Test had no item explicitly saying "verify health bars are visible."
+
+### Why didn't anyone ask?
+
+Engineers instinctively trust automated tests. Playwright tests verified that `data-testid="char-hp-0"` exists and the value is correct; logically HP was working correctly. From an engineering perspective, the claim "HUD complete" had no logical gaps.
+
+Except the gap wasn't in the logic layer — it was in the presentation layer.
+
+Presentation layer verification can't be automated to a "write one line of code and it's done" level — someone must actually watch the game and visually confirm there is visual feedback. This can't be checklist-ified, can't be toolified, can't run in a CI pipeline.
+
+So it was skipped.
+
+---
+
+## Part 4: Phase 5's second invisible decision
+
+Phase 5 (Enemy AI & Level 1 + Bot API) buried the second core problem.
+
+### AISystem's architectural boundary
+
+`GameScene.ts` initialization code:
+
+```typescript
+this.aiSystem = new AISystem();
+// ...
+this.aiSystem.update(delta, this.enemies, this.combatSystem.balls, this.players, this.combatSystem);
+```
+
+`this.enemies` enters AI logic; `this.players` is passed only as "target information." Nowhere is AI decision-making executed on `this.players`.
+
+`AISystem`'s class name and structure, from a design perspective, was only an "Enemy AI." No corresponding system implementation existed for friendly teammate AI.
+
+### Why? Resource contention
+
+Phase 5 simultaneously introduced "Bot API" — a `window.__debug.bot` automation interface letting Playwright E2E tests "play the game":
+
+```typescript
+await page.evaluate(() => {
+  window.__debug.bot.selectCharacter(0);
+  window.__debug.bot.moveTowards({ x: 100, y: 100 });
+  window.__debug.bot.pickupBall();
+  window.__debug.bot.throwBallAt({ x: 200, y: 200 });
+});
+```
+
+Engineering investment in Bot API — designing the API interface, implementing every operation's logic, integrating into the game loop — consumed approximately 60% of Phase 5's development time.
+
+Friendly teammate AI implementation was pushed back. Then gradually forgotten during the process of being pushed back. Phases 6–11 had no Phase explicitly requiring "implement friendly teammate AI." It wasn't in any Checklist, not in any DoD.
+
+Resource contention silently happened. Nobody in planning meetings said "we decided to prioritize Bot API and push teammate AI back." It just happened.
+
+### Bot winning ≠ game playable
+
+When Phase 5 completed, the Bot could play from start to finish and win the game. All E2E tests passing led people to believe "game works correctly."
+
+But Bot didn't need to see health bars — it read `data-attribute`s directly. Bot didn't need teammate support — it controlled our team's other two characters itself. Bot didn't need any visual feedback — it operated in a logical sequence.
+
+Bot won the game, which in engineering terms meant: logic layer is complete.
+
+But that ≠ game playable.
+
+---
+
+## Part 5: Problem accumulation in Phases 6–11
+
+Every subsequent phase layered on top of existing deficiencies.
+
+| Phase | Name | New features | Remaining issues |
+|-------|------|-------------|-----------------|
+| 6 | Game Flow | Scene transitions, win/loss conditions | Players still can't see HUD; enemies have unilateral advantage |
+| 7 | Progression | Level-up system, character progress | Progress bars invisible; teammates still motionless |
+| 8 | Advanced Content | Boss, Levels 2–4 | AI imbalance doubled; new enemies easier to win |
+| 9 | UI Polish | "UI optimization" | Actually optimized data-testid accuracy, not visible UI |
+| 10 | Settings & i18n | Settings menu, multi-language | New visible menus added, but game itself still broken |
+| 11 | Co-op & Deployment | Two-player mode, launch | Entire defective game deployed online |
+
+When each Phase completed, the development team saw ✅ ✅ ✅ on their checklist. Every one green.
+
+These green lights had a numbing effect.
+
+When the 6th, 7th, 8th Phases all passed, people started believing "the system works." Doubt began to fade. Vigilance about pre-existing problems began to drop — "if this really had a problem, earlier phases would have caught it."
+
+Technical debt was covered by green test lights. Green test lights made people stop questioning.
+
+### Phase 9's visual deception
+
+Phase 9 was named "UI Polish." This sounded like "we're now refining existing UI."
+
+In reality, the game had no visible UI at this point — only blank divs marked with data-attributes. What did Phase 9 "polish"?
+
+Playwright test validation of data-attributes became stricter. HTML Overlay update logic was refactored to ensure data values always stayed synchronized.
+
+Looked like UI optimization, was actually improvement of test compliance.
+
+Nobody said "we don't actually have any visible UI yet."
+
+---
+
+## Part 6: Why wasn't it discovered until the playtest?
+
+The defining pattern: **throughout the entire development cycle, "playing the game" was never a formal acceptance action.**
+
+Vercel deployment passed ✅  
+All pipeline checks passed ✅  
+Smoke Test signatures confirmed ✅  
+One month of linear development, every Phase approved ✅  
+
+Until someone — not a developer, not QA, just a game player with no background knowledge — opened the game.
+
+This person treated it the way they'd treat any game: they played it.
+
+Three problems surfaced within 30 seconds.
+
+---
+
+## Root cause analysis: 10 points
+
+### Implementation and process level
+
+**1. Test contracts mistaken for UI implementation**
+
+HTML `data-attribute` overlay is a test bridge layer. Its purpose is to give Playwright a stable hook for reading game state. But in impl-plan, it had no clear boundary separating it from "HUD implementation."
+
+Result: Playwright can read HP value = HUD complete ✅
+
+That equation is logically clear from an engineering perspective, but wrong from a user experience perspective.
+
+**2. DoD lacks player-perspective acceptance criteria**
+
+Five standard DoD items, all based on engineering tool results. Not one said "player should be able to see X."
+
+"Manual Smoke Test" was the only mention of player perspective, but had no corresponding checklist. It looked like a constraint; in practice it was open-ended.
+
+**3. AISystem design boundary only covers enemies**
+
+Friendly teammate AI was never explicitly required by any Phase's DoD. It wasn't an implementation oversight — it was an architectural design boundary choice. `AISystem`'s name and implementation both pointed to "enemy AI system."
+
+**4. Linear phase ordering pushed playability to the end**
+
+Playability-required elements (movement, throwing, damage, HP, win/loss, visual feedback, teammate assistance) were distributed across Phases 2–6. No Phase's DoD required "game must be fully playable at this point."
+
+Playability became an emergent property, not an explicit requirement. Emergent properties aren't designed, aren't accepted.
+
+**5. Event bus subscriber side had no test coverage**
+
+Many game mechanics were implemented through Events. For example, the Taunt skill emits `SKILL_ACTIVATED`, which should have sound effect subscribers, animation subscribers, HUD subscribers.
+
+Emitter side had unit test coverage. Subscriber side didn't.
+
+If there are no subscribers, events enter the void and fail silently. Tests won't tell you "nobody is listening."
+
+**6. Bot API investment crowded out teammate AI implementation resources**
+
+Resources are finite. Phase 5 chose to invest in Bot API over teammate AI — a strategic decision. But the decision was never explicitly discussed or recorded.
+
+The relative priority of the two systems was silently established by the Phase timeline into a significant difference.
+
+---
+
+### Spec level
+
+**7. GDD used directly as PRD, missing the requirements translation step**
+
+"Game has health bars" (GDD-level fact) needed translation to "player sees red health bar, positioned above character, updating in real time" (PRD-level verifiable requirement).
+
+This translation step never happened. Engineers received GDD and started implementing directly. The missing step was precisely where "visual presentation requirements" and "AI behavioral specs" fell through.
+
+**8. Spec didn't distinguish "presentation layer" from "logic layer"**
+
+Key Mechanics Checklist items were all feature descriptions. Not one explicitly pointed to the presentation layer.
+
+"Health bar system" vs "health bar system + player-visible health bar visual presentation" — two phrases about the same thing, but the second clearly splits the first into two layers.
+
+Spec didn't make this split. Implementation had no explicit target.
+
+**9. Key Mechanics Checklist format was misleading**
+
+Checkbox list looked like acceptance criteria. But phrasing was vague (feature list), not specific (acceptance criteria).
+
+Spec readers seeing 20 checkboxes instinctively assumed they represented 20 acceptance standards. In reality, each needed to be elaborated.
+
+This elaboration never happened. Checkboxes were directly treated as implementation guidance.
+
+**10. Absence of AI behavioral spec is a scope omission at the spec level**
+
+"Uncontrolled characters act autonomously" — the entire spec had only this one sentence about friendly teammate AI. And buried in the Switching section.
+
+Missing: when to move, when to throw, how to select targets, cooldowns, priority order.
+
+This wasn't an implementation oversight — it was a fundamental spec deficiency. Engineers had no source requirements, so nothing could be implemented.
+
+---
+
+## Complete root cause chain
+
+```
+GDD not translated to PRD (root cause 7)
+  ↓
+Presentation layer requirements & AI behavioral specs absent (root causes 8, 10)
+  ↓
+impl-plan DoD designers had no clear basis for player-perspective acceptance criteria (root causes 2, 3, 9)
+  ↓
+Tests only covered logic layer; presentation layer and AI behavior had no test hooks (root causes 1, 5)
+  ↓
+Visual presentation and teammate AI systematically omitted (root causes 4, 6)
+  ↓
+All automated checks passed, until a human player looked at it
+```
+
+---
+
+## Prevention mechanisms
+
+### First priority (high impact, low cost)
+
+**1.1 Mandatory specification walkthrough after spec completion**
+
+PM + architect, walk through the spec together. Specific process:
+
+- PM states a feature: "Characters have a health bar system"
+- Architect asks back: "What does the player see? Where? Under what conditions does it update?"
+- PM states detailed requirements, or realizes they hadn't thought it through
+- Results recorded in a "Requirements Understanding Gap Table"
+
+2-hour time cap, usually 1 hour is sufficient. Extremely low cost, extremely high impact.
+
+**1.2 Add fixed sections to spec: presentation layer requirements list & AI behavioral spec list**
+
+Presentation layer requirements list:
+
+```markdown
+## Presentation Layer Requirements
+
+- HP Bar: above all surviving characters' heads at 20px, red, 50px wide, real-time HP percentage; number displayed on right side
+- Skill Cooldown: bottom-left HUD, four skill icons in row, gray overlay indicates cooling, coverage percentage
+- ...
+```
+
+AI behavioral spec list:
+
+```markdown
+## Friendly Teammate AI Behavioral Spec
+
+- Movement target: approach nearest ball; if no balls, approach enemy furthest from teammates
+- Throw target: nearest enemy in line of sight; if no enemies, don't throw
+- ...
+```
+
+Enforcing these two sections transforms vague GDD into explicit presentation and behavior requirements.
+
+**1.3 Reformat Key Mechanics Checklist**
+
+From:
+
+```markdown
+- [ ] Health bar system (player & enemies)
+```
+
+To:
+
+```markdown
+- [ ] Health bar system | Acceptance: red health bars visible above all surviving characters, updating within 0.1s of damage; disappearing at zero HP
+```
+
+Acceptance criteria must say either "player can see X" or "logic verification of X." Checklist transforms from feature list to acceptance criteria.
+
+---
+
+### Second priority (high impact, requires discipline)
+
+**2.1 impl-plan must establish "minimum viable playability milestone Phase"**
+
+One explicit Phase (e.g., Phase 4a), DoD includes:
+
+1. Characters can move
+2. Can pick up balls
+3. Can throw at enemies
+4. Enemies take damage and lose HP
+5. **Player can see enemy HP changes**
+6. Win/loss determination (last surviving character)
+
+All six conditions simultaneously true. Manual playtesting for 5 minutes, confirming a complete game round can be played.
+
+This makes "playability" an explicit requirement rather than an emergent property.
+
+**2.2 Add "player perception acceptance checklist" to each Phase's DoD**
+
+3–5 items per Phase, uniform format: "As a player, without opening DevTools, can I observe X?"
+
+For example, Phase 4 DoD adds:
+
+```markdown
+- [ ] 3-minute manual playtest: confirm enemy HP changes are visibly real-time
+- [ ] 3-minute manual playtest: confirm skill cooldown countdown is visible
+- [ ] Manual playtest: confirm clear visual or audio feedback when hit
+```
+
+These items can't be automated — someone must execute them. But listing them explicitly means they can't be skipped.
+
+**2.3 Explicitly annotate HTML Overlay spec with layer designation**
+
+Add warning to impl-plan's HTML Overlay section:
+
+```markdown
+## HTML Overlay Spec
+
+⚠️ **This spec defines a data-layer contract for test verification of game logic.**
+**HTML Overlay elements themselves are not visible; this data must be transformed in GameUIScene into player-visible visual elements.**
+
+Tests passing data-attribute ✅ ≠ UI implementation complete ❌
+
+[Specific data-attribute specs...]
+```
+
+This line prevents the "HTML Overlay = HUD" misconception.
+
+---
+
+### Third priority (can be built incrementally)
+
+**3.1 Event Bus spec: every emit must have corresponding subscriber tests**
+
+Every event definition must describe expected subscribers and their behavior:
+
+```typescript
+/**
+ * Skill activation event
+ * @event SKILL_ACTIVATED
+ * @param skillId - Skill ID
+ * 
+ * Subscribers:
+ * - CombatSystem: handle damage calculation
+ * - AudioSystem: play skill sound effect
+ * - AnimationSystem: play skill animation
+ * - HUDSystem: update cooldown display
+ */
+this.events.emit('SKILL_ACTIVATED', skillId);
+```
+
+Each subscriber has a corresponding test: "given event X is emitted, target system state should be Y."
+
+**3.2 Resource allocation made explicit in Phase planning**
+
+Feature implementation vs. test support tools (e.g., Bot API) compete for resources — this competition must be discussed openly in development planning meetings:
+
+```markdown
+Phase 5: Enemy AI & Level 1 + Bot API
+
+Time allocation:
+- Enemy AI implementation: 40% (2.4 days)
+- Level 1 design and assets: 20% (1.2 days)
+- Bot API: 40% (2.4 days)
+
+Decision: prioritize Bot API because it accelerates E2E test writing in later phases.
+Teammate AI deferred to Phase 6–7.
+
+Follow-up tracking: ensure teammate AI is added to corresponding Phase DoD.
+```
+
+Resource contention won't disappear, but at least it can be discussed explicitly, recorded, and tracked.
+
+---
+
+### Long-term direction
+
+**Separate GDD and PRD into two documents**
+
+- `GDD.md`: what features the game has
+- `PRD.md`: what the player experience is and how to accept it
+
+A formal "requirements refinement meeting" serves as the transition node between them.
+
+**Introduce regular playtests**
+
+After completing major Phases (e.g., 4, 6, 8), invite non-development members (PM, designers, friends) to actually operate the game for 30 minutes. Don't require structured feedback — just record "first-impression problems."
+
+First impressions are the most honest user experience signal.
+
+---
+
+## Core lessons
+
+> What tests accept determines what problems get discovered.
+>
+> The implicit audience of acceptance criteria is the CI system.
+>
+> The CI system can't see the things it doesn't validate.
+
+#### Specifically:
+
+- **Data correct ≠ information visible** — the data layer can pass all logic tests while the presentation layer remains empty
+- **Information visible ≠ experience working** — health bars exist, but position, size, and update rate may prevent players from reacting quickly
+- **Bot completing the game ≠ human players can enjoy it** — automated scripts don't need visual feedback, don't need teammate support, don't need any human intuition
+- **"All tests passing" and "game is fun" are completely different propositions** — one in engineering space (logic layer), one in user space (perception layer)
+
+The Dodgeball Game story is a perfect illustration of this boundary. Engineering: perfect. User experience: failing.
+
+Passing in both spaces requires consciously making the distinction at the requirements level, with corresponding items in the acceptance criteria.
+
+---
+
+## Epilogue
+
+This isn't a blame story. Every failure point was a locally reasonable decision:
+
+- GDD itself had no problem; the problem was using it as a PRD
+- HTML Overlay spec was very useful; the problem was not clarifying its boundaries
+- Bot API investment was worthwhile; the problem was that the decision to deprioritize teammate AI was never made explicit
+- Phase linear development is common; the problem was no milestone forcing "game must be playable"
+
+Locally logical, globally broken. This is a common failure pattern in complex systems.
+
+Prevention mechanisms aren't complicated — a few meetings, a few document sections, one playtest step. All within reasonable cost.
+
+But implementation requires one critical shift: **moving the acceptance workflow from the CI pipeline to human eyes and hands.**
+
+Let CI keep doing what it does best: logic verification.
+
+Leave explicit space for: presentation layer verification, experience verification, intuitive feel.
+
+Both layers need green lights for the game to be truly done.

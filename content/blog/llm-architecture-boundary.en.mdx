@@ -1,0 +1,259 @@
+---
+title: "Where LLMs Belong: Architectural Boundaries in Recommendation Systems"
+date: 2026-05-26
+tags: [LLM, Architecture, Recommendation System, TDD, AI]
+summary: "LLM vs rule-based is the wrong question. The right question: where should the boundary be drawn in this system?"
+draft: true
+---
+
+"LLM or rule-based?" is the wrong framing.
+
+The right question is: **where should the boundary be drawn in this system?**
+
+Using an outfit recommender (weather + wardrobe → outfit suggestions) as an example, here's how to think about where that boundary goes.
+
+## Recommendation systems and control systems are different problem types
+
+Engineers often make one mistake: applying the rigor of "control systems thinking" directly to "recommendation systems."
+
+| System type | Correct answer | Ambiguity | Validation standard |
+|---|---|---|---|
+| Control system (robotic pick-and-place, CNC, PLC) | Unique | Not permitted | Precision, reproducibility |
+| Recommendation system (outfit, search, content feed) | Multiple | Acceptable | Preference, satisfaction, evaluation |
+
+In a control system, "picking position off by 2mm" is a bug. In a recommendation system, "the suggested outfit differs from what the user chose" is often just normal variation, not a failure.
+
+This distinction matters because it determines the validation strategy — which in turn determines the architecture.
+
+## Where LLMs are genuinely powerful — semantic abstraction
+
+LLMs aren't most valuable for "replacing if-else."
+
+They're valuable for **human semantics → machine constraints**.
+
+For example:
+- User says: "I'm going to a business casual dinner but I'll be doing a lot of walking"
+- Rule system: hard to handle this kind of fuzzy intent gracefully. You'd have to enumerate all (occasion, constraint) combinations and write priority rules
+- LLM: extracts `{ occasion: "business_casual", constraint: "walking_friendly", formality: 0.6 }`, directly usable downstream
+
+That's fuzzy intent extraction. If-else can't handle this gracefully.
+
+Rule systems get forced into this:
+
+```csharp
+if (occasion == Occasion.BusinessCasual && hasWalkingConstraint && weather.Temp > 15)
+{
+    return SuggestWalkableFormalOutfit();
+}
+else if (occasion == Occasion.BusinessCasual && !hasWalkingConstraint)
+{
+    return SuggestFormalOutfit();
+}
+else if (occasion == Occasion.Casual && hasWalkingConstraint)
+{
+    return SuggestComfortableOutfit();
+}
+// ... continues to explode
+```
+
+This is inelegant and prone to entropy.
+
+## Production LLM architecture: not "prompt in → output out"
+
+Mature production AI systems almost universally look like this:
+
+```
+User input (natural language)
+  ↓
+LLM (semantic interpretation)
+  ↓
+structured intent (JSON schema)
+  ↓
+validator
+  ↓
+rule engine / constraint solver
+  ↓
+ranking layer
+  ↓
+executor
+```
+
+LLM handles only one layer (semantic parsing). Not the entire system.
+
+The deterministic parts remain deterministic.
+
+Describing LLMs as "prompt in → random output out" is a strawman. Real-world designs place the LLM near the input end, responsible for converting fuzzy human language into clear, machine-usable formats. Every downstream layer can then have tests, guarantees, and auditability.
+
+Example:
+
+```csharp
+// 1. LLM semantic layer: natural language → structured intent
+var intent = await semanticLayer.ExtractIntent(userInput);
+// intent = { occasion: "business_casual", constraints: ["walking"], formality: 0.6 }
+
+// 2. Validation layer: ensure intent is valid
+if (!validator.IsValid(intent)) throw new InvalidIntentException();
+
+// 3. Constraint solver: find outfits satisfying constraints
+var candidates = constraintSolver.FindOutfits(intent, wardrobe, weather);
+
+// 4. Ranking layer: order by user preferences (deterministic)
+var ranked = ranker.Rank(candidates, userPreferences);
+
+// 5. Return top-1
+return ranked.First();
+```
+
+Only Layer 1 relies on the LLM. Every other layer can be tested, validated, and guaranteed.
+
+## The real cost of rule-based systems
+
+Rule-based systems aren't free. As rules accumulate:
+
+- **Implicit priority conflicts**: which rule takes precedence?
+- **Hidden coupling**: change one rule, another quietly breaks
+- **Conflicting constraints**: formal occasion in winter with lots of walking — wear what? Both "formal" and "comfortable"?
+- **Rule explosion**: `if rainy && cold && windy && formal && walking_distance > 5km && wardrobe.Count < 20`...
+
+Many legacy MES/PLC/automation systems spiral out of control exactly here. The system is 20 years old, and nobody dares to delete any rules. 3000 lines of rule code, dozens of conflicting priority rules.
+
+Such systems are actually harder to maintain than a well-designed LLM pipeline. More bug-prone. Harder to diagnose — bugs hide in rule interactions that tests can't surface.
+
+## The right testing strategy for recommendation systems
+
+`Assert.Equal(expectedOutfit, recommender.Suggest(...))` is the wrong testing strategy for recommendation systems.
+
+It assumes a unique answer. But recommendation systems may have multiple correct answers by design.
+
+Mature recommendation testing follows four approaches:
+
+### 1. Constraint satisfaction (must-hold constraints)
+
+```csharp
+// Rainy day shouldn't recommend sandals
+var result = recommender.Suggest(rainyWeather, wardrobe);
+Assert.DoesNotContain(result.Shoes, s => s.Type == ShoeType.Sandal);
+```
+
+### 2. Property-based testing (output should satisfy properties for any valid input)
+
+```csharp
+// Any scenario below 10°C should include an outer layer
+Prop.ForAll(
+    Arb.From(weatherGenerator),
+    weather =>
+    {
+        if (weather.Temperature < 10)
+        {
+            var result = recommender.Suggest(weather, wardrobe);
+            return result.HasOuterLayer;
+        }
+        return true;
+    }
+).QuickCheckThrowOnFailure();
+```
+
+### 3. Acceptance region (set of valid answers, not a unique answer)
+
+```csharp
+// Define a set of "acceptable outfits"
+var acceptableOutfits = new[]
+{
+    new Outfit { Top = "sweater", Bottom = "jeans", Shoes = "sneakers", Outer = "jacket" },
+    new Outfit { Top = "thermal_base", Bottom = "cargo_pants", Shoes = "boots", Outer = "coat" },
+    new Outfit { Top = "hoodie", Bottom = "leggings", Shoes = "sneakers", Outer = "puffer_jacket" }
+};
+
+var result = recommender.Suggest(coldRainyWeather, wardrobe);
+Assert.Contains(result, acceptableOutfits);
+```
+
+### 4. Statistical evaluation (for the LLM layer)
+
+```csharp
+// Semantic extraction accuracy across 100 scenarios
+var scenarios = GenerateTestScenarios(100);
+var correct = 0;
+
+foreach (var scenario in scenarios)
+{
+    var extracted = semanticLayer.ExtractIntent(scenario.UserInput);
+    var humanLabeled = scenario.ExpectedIntent;
+    
+    if (IntentMatcher.Matches(extracted, humanLabeled))
+        correct++;
+}
+
+// Expect 95%+ semantic extraction accuracy
+Assert.True(correct >= 95, $"Semantic extraction accuracy: {correct}%");
+```
+
+## Decision framework for drawing the boundary
+
+What characteristics of a problem lean toward rule-based vs LLM?
+
+| Dimension | Lean rule-based | Lean LLM |
+|---|---|---|
+| **Input space** | Closed, finite, explicit | Open, natural language, fuzzy |
+| **Correct answers** | Unique or few | Multiple, diverse |
+| **Validation method** | Assertion, precision | Evaluation, acceptance region |
+| **Number of rules** | Enumerable (< 50 rules) | Too many or unknown |
+| **Model update risk** | Unacceptable | Acceptable |
+| **Explainability requirement** | Must explain each rule | Black box acceptable |
+| **Typical examples** | CNC coordinate calculation, ticket validation | Intent extraction, classification, deduplication |
+
+Key point: **different layers of the same system may simultaneously fall in both columns.**
+
+That's the design space for hybrid architecture.
+
+## Example: outfit recommender boundary
+
+If the complete system looks like this:
+
+```
+Layer 1: Intent extraction
+  Input: natural language ("business casual, will walk a lot")
+  Output: structured intent {occasion, constraints, formality}
+  Choice: LLM
+  Reason: open input space, semantic ambiguity, hard to enumerate rules
+
+Layer 2: Constraint satisfaction
+  Input: structured intent + wardrobe + weather
+  Output: valid outfit candidate set
+  Choice: rule-based constraint solver
+  Reason: rules explicitly enumerable, easy validation, needs full determinism
+
+Layer 3: Ranking
+  Input: candidate set + user preferences
+  Output: ranked result
+  Choice: rule-based (optional: hybrid small ML model)
+  Reason: simple rules suffice (color preference, brand, price); if complex, switch to ML
+
+Layer 4: Return
+  Input: ranked result
+  Output: final recommendation
+  Choice: deterministic (return top-1)
+  Reason: execution layer must be deterministic, no ambiguity
+```
+
+Benefits of this design:
+
+1. LLM only at the boundary (semantic layer). Easy to isolate, easy to test, easy to swap models
+2. Core logic (constraint + ranking) is fully auditable and testable
+3. Entire system has clear data flow
+4. Bugs can be diagnosed layer by layer
+
+## Conclusion
+
+The genuinely interesting question isn't whether to use an LLM or not.
+
+It's:
+- **Which layer needs semantic understanding?** → LLM
+- **Which layer needs auditable determinism?** → rule-based / deterministic
+- **What does the interface between them look like?** → Structured schema (JSON)
+
+Design this boundary well, and the LLM and the deterministic core aren't opposites — they're complementary.
+
+LLM near the input end, turning ambiguity into clarity. Every downstream layer deterministic, testable, trustworthy.
+
+That kind of system has both LLM's flexibility and a control system's rigor.

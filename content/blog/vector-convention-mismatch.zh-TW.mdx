@@ -1,0 +1,280 @@
+---
+title: "列向量 vs 行向量：差點上線的座標轉換 Bug"
+date: 2026-05-15
+tags: [Robotics, Graphics, Linear Algebra, OpenTK, C#, Coordinate Systems]
+summary: 跨越機器人學和圖形學的領域邊界時，行列向量約定不一致會產生看起來合理卻語義錯誤的座標轉換 Bug。從數學、Bug 本身到邊界層的建立，完整梳理這個在 column/row convention 夾縫中幾乎上線的問題。
+draft: false
+---
+
+
+在整合視覺系統（camera）和機械臂的過程中，我遇到了一個看起來很簡單，但實際上很危險的 bug：座標轉換的向量約定不一致。這個問題不在於數學本身，而在於跨越不同領域慣例的邊界時，很容易寫出看起來正確、但語義上完全錯誤的程式碼。
+
+## 背景：整合視覺和機械臂系統
+
+現在的專案需要：
+- 相機拍攝工作台上的物體
+- 檢測物體位置和姿態
+- 指示機械臂去拿取
+
+這涉及三個座標系：
+- **Camera frame (c)** — 相機的視角
+- **Robot base frame (r)** — 機械臂基座
+- **Arm end-effector frame (a)** — 夾爪
+
+```
+向量轉換路徑：
+
+  [Arm (a)] ──r_T_a──► [Robot (r)] ──c_T_r──► [Camera (c)]
+      └──────────────────── c_T_a ───────────────────►
+
+  箭頭方向 = 向量的轉換方向（從 source frame 到 destination frame）
+```
+
+## Column Vector Convention（標準機器人學約定）
+
+機器人學（Craig、Spong 教科書）用 column vector convention：
+
+向量為列向量，transform matrix **左乘**向量：
+
+```
+v' = T * v
+```
+
+命名約定是 `{destination frame}_T_{source frame}`，例如 `c_T_r` 表示「把 robot frame 的向量帶到 camera frame」的 transform。
+
+Frame chaining 的規則（cancellation rule）：
+
+```
+c_v = c_T_r * r_T_a * a_v
+```
+
+消去規則：當兩個矩陣相鄰，**左矩陣的 source frame = 右矩陣的 destination frame**，中間的 frame 消去：
+
+```
+  c_T_r  *  r_T_a
+  ───┬──    ──┬──
+     └── r ──┘   ← 相鄰的 r 消去
+         │
+         ▼
+       c_T_a
+```
+
+任意長度的 chain 依序消去：
+
+```
+  c_T_r  *  r_T_b  *  b_T_a
+  ───┬──    ──┬─┬──   ──┬──
+     └── r ──┘ └── b ──┘
+                 │
+                 ▼
+               c_T_a
+```
+
+## Row Vector Convention（圖形學和 OpenTK）
+
+OpenTK（C#/.NET 圖形數學庫）用 row vector convention：
+
+向量為行向量，transform matrix **右乘**向量：
+
+```
+v' = v * T
+```
+
+這導致 frame chaining 的乘法順序和 column convention **完全相反**。
+
+| 動作 | Column convention | Row convention (OpenTK) |
+|------|-------------------|-------------------------|
+| 向量應用 transform | `v' = T * v` | `v' = v * T` |
+| Frame chaining（同樣命名） | `C_T_A = C_T_B * B_T_A` | `C_T_A = B_T_A * C_T_B` |
+
+Row convention 的消去規則方向**相反**：**左矩陣的 destination frame = 右矩陣的 source frame** 時消去：
+
+```
+  B_T_A  *  C_T_B    ← row convention（同樣的 {dest}_T_{src} 命名）
+  ─┬───     ─┬───
+   └─── B ───┘   ← 這次是左矩陣的 dest 對右矩陣的 src
+        │
+        ▼
+      C_T_A
+```
+
+消去方向反轉的根本原因：若 `M_row = M_col^T`，轉置代數保證
+
+```
+  column:  A_col * B_col
+                ↓ 兩側取轉置
+  row:     B_row * A_row   （順序自動反轉）
+
+  因為 (A * B)^T = B^T * A^T
+```
+
+所以在 row convention 中寫 frame chain，乘法順序與 column convention 的**視覺上完全相反**，但表達的幾何意義相同。
+
+## 重要區分：Vector Convention vs Memory Layout
+
+這是這個領域最常見的混淆，值得單獨說清楚。
+
+先釐清一個前提：**OpenTK 的 Matrix4 本身只是一個容器**，16 個 float 的儲存空間，沒有強制任何 convention。Convention 是你選擇的工具帶進來的：
+
+- **OpenTK 的 built-in 建立函式**（`Matrix4.CreateTranslation`、`Matrix4.CreateRotationX` 等）按 row convention 填入元素，例如 translation 放在 Row3（最後一行），而不是 column convention 的最後一列
+- **`*` 運算子**是純數學的標準矩陣乘法，不屬於任何 convention。兩個 column convention 矩陣用 `*` 相乘，得到正確的 column convention 合成結果；兩個 row convention 矩陣相乘，同樣正確
+- **`Vector4.Transform(v, M)`** 執行的是 `v * M`（row convention 的向量應用）
+
+真正的危險是**混合不同 convention 的矩陣**：用 OpenTK built-in 函式建的矩陣（row convention）和手動填的矩陣（column convention）一旦 `*` 在一起，結果就是錯的，因為兩個矩陣的元素排列意義不同。問題不是 `*` 強制 row convention，而是不一致本身。
+
+| 概念 | 定義 | 影響 |
+|------|------|------|
+| **Row/column vector convention** | 向量是 row 還是 column，決定 transform 左乘還是右乘 | 乘法語義、乘法順序、frame chaining 方向 |
+| **Row/column major (memory layout)** | 矩陣元素在記憶體中的排列順序（哪個 index 連續存放） | 記憶體存取效率，**不影響乘法語義** |
+
+兩者沒有必然關聯。Row vector convention 的庫不一定用 row-major storage，反之亦然。
+
+OpenTK 剛好同時使用兩者，但造成「乘法順序差異」和「rotation 需要轉置」的原因只有 **row vector convention**，不是 memory layout。如果有人說「OpenTK 需要轉置是因為 row-major」，他混淆了這兩件事。
+
+```
+row-major storage:  控制 M[0][1] 在記憶體中的位置
+row vector conv.:   決定 v' = v * M 還是 v' = M * v  ← 這個才是重點
+```
+
+## 問題根源：混淆向量約定
+
+問題程式碼：
+
+```csharp
+Matrix4 c_T_r = GetCameraFromRobotTransform();
+Matrix4 r_T_a = GetRobotFromArmTransform();
+
+var c_T_a = c_T_r * r_T_a;  // 編譯過，命名對，cancellation rule 驗也過——但結果是錯的
+```
+
+這個 bug 真正危險的地方是：它通過了所有你平常會做的檢查。
+
+- **命名**：`c_T_r * r_T_a`，符合 `{dest}_T_{src}` 約定 ✓
+- **Cancellation rule**：r 消去，結果是 `c_T_a` ✓
+- **Compiler**：Matrix4 乘 Matrix4，沒有錯誤 ✓
+- **執行期**：不 crash，回傳一個看起來合理的矩陣 ✓
+
+只有最後拿去用的時候，機械臂位置偏了，才知道有問題。
+
+**根本原因**：OpenTK 的 `*` 運算子實作的是 row convention 的矩陣乘法。你寫的是 column convention 的乘法順序，但 OpenTK 用 row convention 執行，兩者語義不同，結果不同。
+
+正確做法是透過 helper 明確標記 convention：
+
+```csharp
+// Cancellation rule 依然成立：c_T_r * r_T_a → r 消去 → c_T_a ✓
+// 但這裡的 * 是 column convention 語義的乘法，不是 OpenTK 的原生 *
+var c_T_a = ColumnVectorTransforms.Compose(c_T_r, r_T_a);
+```
+
+## 實際程式碼範例
+
+### 錯誤版本（在 OpenTK 中直接用 column convention 的乘法順序）
+
+```csharp
+Matrix4 c_T_r = GetCameraFromRobotTransform();
+Matrix4 r_T_a = GetRobotFromArmTransform();
+
+// 命名正確、cancellation rule 通過、compiler 過——但 OpenTK 用 row convention 執行
+// 實際計算的不是 c_T_r * r_T_a（column convention），而是 row convention 的矩陣積
+// 兩者數值不同，機械臂拿到的位置會錯
+var c_T_a = c_T_r * r_T_a;
+```
+
+### 正確版本（使用公司的 Column Vector Helper）
+
+```csharp
+public static class ColumnVectorTransforms
+{
+    /// <summary>
+    /// 在 OpenTK row convention 環境中建立 column convention 語義的 Matrix4。
+    /// OpenTK 用 row vector convention（v' = v * M），其中 axis vectors 是 rows。
+    /// Column convention 的旋轉矩陣 R 其 axis vectors 是 columns，
+    /// 放入 OpenTK 時需要轉置為 R^T，使 v' = v * R^T 等價於 v' = R * v。
+    /// </summary>
+    public static Matrix4 Create(Vector3 translation, Matrix3 rotation)
+    {
+        return new Matrix4(rotation.Transpose(), translation);
+    }
+
+    /// <summary>
+    /// 按 column convention 語義合成兩個 transforms：Compose(A, B) = A * B。
+    /// 數學原理：column convention 的 A_col * B_col，在 row convention 中等價於
+    /// B_row * A_row，因為 (A_col * B_col)^T = B_col^T * A_col^T = B_row * A_row。
+    /// 轉置關係使乘法順序自動反轉，所以實作為 rhs * lhs。
+    /// </summary>
+    public static Matrix4 Compose(Matrix4 lhs, Matrix4 rhs)
+    {
+        // 對應 column convention: lhs * rhs
+        return rhs * lhs;
+    }
+}
+
+// 使用方式
+var c_T_r = ColumnVectorTransforms.Create(trans_cam, rot_cam);
+var r_T_a = ColumnVectorTransforms.Create(trans_arm, rot_arm);
+
+// c_T_a = c_T_r * r_T_a（column convention 語義）
+// Cancellation rule 驗證：c_T_r * r_T_a → r 消去 → c_T_a ✓
+var c_T_a = ColumnVectorTransforms.Compose(c_T_r, r_T_a);
+```
+
+## 為什麼這個 Bug 難發現
+
+所有平常會做的靜態檢查全部通過：
+
+- **命名**：`{dest}_T_{src}` 約定沒有違反
+- **Cancellation rule**：手動驗一遍，r 消去，結果是 `c_T_a`，看起來對
+- **Compiler**：Matrix4 * Matrix4，型別完全合法
+- **執行期**：不 crash，矩陣數值看起來合理
+
+唯一能抓到這個 bug 的是：知道 OpenTK 的 `*` 是 row convention，**或者**有一個驗證 frame chaining 合成結果的測試。
+
+## 解決策略
+
+**1. 清晰邊界層**
+
+一個 module 或 static class 專門負責兩種約定的橋接，所有 robotics coordinate 運算都經過它。這個 class 的存在本身就是一個信號：「這裡我們用 column convention 的思維」。
+
+**2. 命名和 Cancellation Rule 作為第一道防線**
+
+每次寫 transform chain，先用 cancellation rule 驗：`c_T_r * r_T_a` → r 消去 → 得到 `c_T_a`，符合預期才繼續。一旦驗不出來（例如 `c_T_r * r_T_c` → 得到 `c_T_c`，不對），就是有問題。
+
+**3. Frame Chaining 測試**
+
+```csharp
+[Fact]
+public void FrameChaining_ColumnConvention_CorrectResult()
+{
+    // 三個座標系，已知相對位置
+    var c_T_r = ColumnVectorTransforms.Create(new Vector3(1, 0, 0), Matrix3.Identity);
+    var r_T_a = ColumnVectorTransforms.Create(new Vector3(0, 1, 0), Matrix3.Identity);
+
+    var c_T_a = ColumnVectorTransforms.Compose(c_T_r, r_T_a);
+
+    // arm 在 camera frame 的位置應為 (1, 1, 0)
+    Assert.Equal(new Vector3(1, 1, 0), c_T_a.ExtractTranslation());
+}
+```
+
+不只測單個 transform，驗 frame chaining 的合成結果才能發現這類 bug。
+
+## 結語
+
+向量約定不是抽象的數學細節。跨越不同領域的庫時，它成為很實際的工程問題。
+
+**關鍵經驗：**
+
+- **Row-major storage 和 row vector convention 是兩件不同的事**：前者是記憶體佈局，後者是數學約定，後者才是乘法順序差異的根本原因
+- **Cancellation rule 是最快的自我驗證工具**：每次寫 transform chain 就驗一次，錯誤在鍵盤上就能攔截
+- **在混合約定的邊界上建立清晰、可測試的轉換層**，比聰明的 one-liner 更重要
+
+把約定明確化，bug 自己會浮出來。
+
+---
+
+**延伸閱讀**
+
+這篇解決的是「哪個方向乘」的問題。但還有一個更深的坑在等著：
+
+- [*Active transform vs passive transform*](/zh-TW/blog/active-passive-transform-semantics) — 數學長一樣，語義完全不同。SLAM、hand-eye calibration 踩這個坑的機率比本文的 bug 還高。
+- *Type-safe coordinate systems in C#*（即將發布）— 用 `Transform<TFrom, TTo>` 讓 compiler 在 compile time 保證 frame chain 合法，把命名規則從人工約定升級成型別系統。

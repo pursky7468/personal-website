@@ -1,0 +1,267 @@
+---
+title: "Claude Code × agy Cross-Model Collaboration: A Complete Pitfall Log"
+date: 2026-05-27
+tags: [Claude Code, Gemini, AI, PowerShell, Windows, Multi-Agent]
+summary: "A full account of integrating agy (Gemini CLI) into Claude Code for cross-model collaboration — every pitfall hit, why it happened, and how it was fixed."
+draft: false
+---
+
+After writing the Codex CLI cross-model collaboration post, the natural next step was applying the same pattern to agy. agy is the command name for Antigravity CLI — a version of Google's Gemini CLI, already authenticated via OAuth with a Google AI Pro subscription, so no auth setup needed.
+
+The goal: let Claude Code call agy, pass it documents or plans for review, or have it run tasks in parallel where Claude isn't the best fit (like analysis requiring a massive context window).
+
+Sounds simple. Took seven pitfalls to get there.
+
+## Pitfall 1: Skipping documentation and going straight to testing
+
+The first move was searching for `gemini --version`, `npx @google/gemini-cli --version`, then investigating flags. I didn't confirm the command name beforehand.
+
+Spent a while looking for where the `gemini` binary lived, whether it was globally installed via npm, whether it was in PATH. Couldn't find it. Took a long roundabout route.
+
+The user finally typed `agy` directly in cmd, and the screen showed:
+
+```text
+▄▀▀▄        Antigravity CLI 1.0.2
+purskyrone@gmail.com (Google AI Pro)
+Gemini 3.5 Flash (Medium)
+```
+
+The command is `agy`, not `gemini`. This should have been confirmed in step one.
+
+**Lesson**: When integrating a new tool, the first step is confirming the command name — not guessing or checking npm.
+
+## Pitfall 2: Using a paid auth mode without reading the docs
+
+While testing headless authentication, agy's error messages mentioned a few env vars: `GEMINI_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA`.
+
+I was about to run `$env:GOOGLE_GENAI_USE_GCA = "true"`.
+
+User stopped it: "Doesn't that one cost money? Don't you check the relevant docs before testing a mode?"
+
+GCA = Gemini Code Assist — an enterprise paid service requiring organizational authorization. No extra setup was actually needed — agy has a Windows keyring silent authentication mechanism, the OAuth token was already in the keyring, and `--print` headless mode reads it automatically, completely free.
+
+| Auth method | Cost | Headless available |
+|---|---|---|
+| Google OAuth (personal account) | Free, 1000 req/day | Windows Credential Manager silent auth ✅ |
+| Gemini API Key | Free tier available | ✅ |
+| GCA (Code Assist) | Enterprise paid | ✅ but costs money |
+| Vertex AI | GCP billing | ✅ but costs money |
+
+**Lesson**: Check billing models before using any auth flag. Flag names like `USE_GCA` and `USE_VERTEXAI` are red flags — stop and verify before using.
+
+## Pitfall 3: Completely wrong stdout capture assumption
+
+Unlike Codex CLI (which has `-o <file>` to write output to a file), agy has no such flag.
+
+Assumed stdout redirect or pipe would capture output. Tested several approaches:
+
+```powershell
+# Test 1: cmd /c redirect
+cmd /c "agy --print '...' > out.txt 2>&1 < NUL"
+# Result: out.txt is 0 bytes
+
+# Test 2: PS pipe
+agy --print "..." 2>&1 | Out-File out.txt
+# Result: out.txt is 0 bytes
+
+# Test 3: Start-Job (confirm whether stdin blocking)
+Start-Job { agy --print "say hi" } | Wait-Job -Timeout 15
+# Result: completes, but Receive-Job has no output
+```
+
+Looking at logs: the API was actually called and the model did respond, but agy is a TUI application — output is written directly to the terminal buffer via Windows Console API (WriteConsoleW). `>`, pipe, and `2>&1` all fail to capture it because these are file descriptors and Console API bypasses them entirely.
+
+**Solution**: agy stores the full conversation log at `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`. That's the correct output source.
+
+```jsonl
+{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Hi"}
+```
+
+`~/.gemini/antigravity-cli/cache/last_conversations.json` maps CWD → conversation ID, updated after every `--print` execution:
+
+```json
+{"C:\\GitSource\\personal-website\\content\\blog": "b60b99aa-..."}
+```
+
+**Lesson**: TUI applications use Console API, not stdout. Before assuming stdout can be captured, confirm with a minimal test.
+
+## Pitfall 4: Applying old-tool frameworks to a new tool
+
+After the first three pitfalls, started doing architecture evaluation: subagent, hook, MCP — which is best?
+
+Produced a detailed comparison table, concluding that a subagent was the best approach because it operates on-demand, carries context, and is consistent with the Codex pattern.
+
+The user asked three times:
+
+- "Shouldn't there be a better approach?"
+- "Is there really no better way to use this?"
+- "If you suddenly had a team from another department available, how would you use them?"
+
+That's when the real problem became clear: agy was being treated as a Codex replacement, with a "review tool" mental model.
+
+Gemini and Codex have one critical difference: 1M token context window. This isn't just a different reviewer — it's a parallel worker capable of things Claude can't do: analyzing entire codebases, summarizing massive documents, handling tasks that require enormous context.
+
+The correct mental model:
+
+```text
+❌ Claude finishes → agy reviews → Claude gets results (sequential)
+
+✅ Claude does Task A (implementation)
+   agy simultaneously does Task B (large context analysis) ← genuinely parallel
+   Claude integrates at the end
+```
+
+**Lesson**: When integrating a new tool, understand how it differs from existing tools before deciding on a pattern. Don't just apply old patterns directly.
+
+## Pitfall 5: Adding `--dangerously-skip-permissions` without thinking
+
+While testing review scenarios, added `--dangerously-skip-permissions` to the script to ensure agy could run smoothly.
+
+This flag means: auto-approve all tool calls without asking.
+
+Passed in a blog post and asked agy to review it. Result:
+
+```text
+Entry types:
+PLANNER_RESPONSE   74
+CODE_ACTION        32
+RUN_COMMAND        28
+SEARCH_WEB          4
+VIEW_FILE           8
+ERROR_MESSAGE       2
+Total steps: 150
+```
+
+agy started autonomously searching the web, executing commands, and reading files — 150 steps. At the end: no text response at all. Every PLANNER_RESPONSE was `tool_calls`, none had `content`.
+
+A review scenario doesn't need tools. Provide text for agy to analyze; it should respond directly without searching or executing anything.
+
+**Solution**:
+1. Don't add `--dangerously-skip-permissions`
+2. Explicitly instruct in the prompt: "Based only on the text I provide. Do not use any tools, web search, or read any files."
+
+**Lesson**: `--dangerously-skip-permissions` isn't "let it run normally" — it's "let it do anything without asking you." Using it in a review scenario is like asking someone to review a document but they go off and run their own research, execute programs, and search the web before forgetting to answer your question.
+
+## Pitfall 6: PowerShell pipe makes agy crash silently
+
+After writing the script and calling it from Claude Code, the agy log was 0 bytes.
+
+Problem: Claude Code's PowerShell tool runs with stdout/stderr as pipes (not a TTY). When calling `agy --print` directly, agy detects that stdin is a non-TTY pipe rather than an interactive terminal and crashes immediately — without even writing the startup message to the log.
+
+No error message at all. 0-byte log is the only clue.
+
+Prior testing was done directly from cmd, where that environment has no pipe, so this issue wasn't caught.
+
+**Solution**: wrap in `cmd /c`, redirect stdin with `<` to a temp file:
+
+```powershell
+$cmd = 'agy --print "respond to the following" < "' + $tmpFile + '"'
+cmd /c $cmd
+```
+
+`cmd /c` creates a child process inheriting cmd's stdio rather than PS's pipe, so agy doesn't detect a broken pipe.
+
+**Lesson**: TUI applications are sensitive to stdio environments. When calling from a scripting environment, expect possible crashes from pipe detection, usually with no obvious error message.
+
+## Pitfall 7: Wrong assumption about transcript field structure
+
+When reading responses from transcript.jsonl, assumed all `PLANNER_RESPONSE` entries have a `content` field:
+
+```powershell
+Where-Object { $_.type -eq "PLANNER_RESPONSE" } |
+Select-Object -Last 1 -ExpandProperty content
+```
+
+Works for simple Q&A (no tools), but in agentic mode, `PLANNER_RESPONSE` has `tool_calls` rather than `content`. Script throws:
+
+```text
+Property "content" cannot be found.
+```
+
+**Solution**: add field existence check:
+
+```powershell
+Where-Object { $_.type -eq "PLANNER_RESPONSE" -and $_.PSObject.Properties.Name -contains "content" }
+```
+
+## The final solution
+
+`C:\Users\<user>\scripts\agy-ask.ps1`:
+
+```powershell
+param(
+    [Parameter(Position = 0, Mandatory = $true)]
+    [string]$Prompt,
+    [switch]$Agentic
+)
+
+$cwd = (Get-Location).Path
+
+$prefix = if ($Agentic) {
+    "respond to the following"
+} else {
+    "Based only on the text I provide below. " +
+    "Do not use any tools, web search, or read any files."
+}
+
+$tmpFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($tmpFile, $Prompt, [System.Text.Encoding]::UTF8)
+
+try {
+    $toolFlag = if ($Agentic) { "--dangerously-skip-permissions" } else { "" }
+    $cmd = 'agy --print "' + $prefix + '" ' + `
+        $toolFlag + ' < "' + $tmpFile + '"'
+    cmd /c $cmd
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+} finally {
+    Remove-Item $tmpFile -ErrorAction SilentlyContinue
+}
+
+$agyCacheDir = "$env:USERPROFILE\.gemini\antigravity-cli"
+$convFile = "$agyCacheDir\cache\last_conversations.json"
+$convId = (Get-Content $convFile -Raw | ConvertFrom-Json)."$cwd"
+
+$transcript = "$agyCacheDir\brain\$convId\.system_generated\logs\transcript.jsonl"
+
+Get-Content $transcript -Encoding UTF8 |
+    ForEach-Object { $_ | ConvertFrom-Json } |
+    Where-Object { $_.type -eq "PLANNER_RESPONSE" -and $_.PSObject.Properties.Name -contains "content" } |
+    Select-Object -Last 1 -ExpandProperty content
+```
+
+Usage:
+
+```powershell
+# Review scenario (pure text analysis, no tools)
+$content = Get-Content "plan.md" -Raw -Encoding UTF8
+& "$env:USERPROFILE\scripts\agy-ask.ps1" "Review this plan for gaps:`n$content"
+
+# Agentic scenario (tools enabled, for research tasks)
+& "$env:USERPROFILE\scripts\agy-ask.ps1" "Research best practices for X" -Agentic
+```
+
+`-Agentic` mode deliberately re-enables `--dangerously-skip-permissions` — the same flag that caused the 150-step runaway in Pitfall 5. The difference is intent: research tasks inherently need agy to search and read data, so tool calls are expected behavior. Review scenarios don't need tools, hence the default off. Know the cost before using `-Agentic`.
+
+## How to avoid these pitfalls going forward
+
+**Before integrating a new tool**:
+- Ask for the command name first, or use `where.exe <name>` to confirm the binary exists
+- Check billing models before using any auth flag
+- Read the "Output" and "Auth" sections of the docs first, not "Features"
+
+**Before assuming stdout can be captured**:
+- Run a quick `agy --print "hi" > test.txt` to check byte count
+- TUI applications almost never use stdout — find the log/cache directory
+
+**Before adding any permission flag**:
+- `--dangerously-skip-permissions` = auto-approve all tools; wrong for review scenarios
+- Think about whether the task needs tools; if not, don't give them
+
+**When calling CLI tools from a scripting environment**:
+- Test once directly in Claude Code's PS environment first to confirm no crashes
+- 0-byte log = process crashed before writing to log, usually a stdio environment issue
+- `cmd /c` is the standard Windows workaround for this class of problems
+
+**When reading transcript or other JSON output**:
+- Never assume a field always exists; check with `-contains` first
+- Tool mode and pure response mode have different schemas

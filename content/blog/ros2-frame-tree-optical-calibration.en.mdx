@@ -1,0 +1,247 @@
+---
+title: "Frame Trees in ROS2: The Complete Journey from Optical Frame to End Node"
+date: 2026-05-15
+tags: [ROS2, Robotics, Coordinate Systems, TF, Linux, Computer Vision, Hand-Eye Calibration]
+summary: After completing ICP-based extrinsic calibration, theoretical and actual point clouds showed a systematic rotational offset. The problem looked like insufficient calibration accuracy — it was actually failing to account for the coordinate rotation between camera_link and camera_depth_optical_frame. This post documents the complete RealSense frame tree structure, the exact transform values between each frame layer, and why the wrong choice of optical frame makes calibration results fail catastrophically.
+draft: false
+---
+
+## Prologue: Calibration complete, point clouds misaligned
+
+While developing a vision system for a robot arm, I finished extrinsic calibration of an Intel RealSense depth camera (eye-in-hand configuration, camera mounted on the arm's end-effector).
+
+Validation approach: compare "theoretical point cloud vs actual point cloud" — capture the arm itself with the camera, simultaneously compute the theoretical arm geometry from joint states + URDF, and overlay both in RViz. If calibration is correct, the two point clouds should perfectly overlap.
+
+But the result was a systematic rotational offset — not a translation error; the entire coordinate axis direction was wrong.
+
+The problem wasn't in the calibration algorithm. The wrong frame was used.
+
+---
+
+## Part 1: ROS standard coordinates vs optical coordinates
+
+ROS officially defines coordinate conventions in [REP 103](https://www.ros.org/reps/rep-0103.html):
+
+- **X axis points forward**
+- **Y axis points left**
+- **Z axis points up**
+
+Camera image optical coordinates (from computer vision convention) are:
+
+- **X axis points right** (image right)
+- **Y axis points down** (image down)
+- **Z axis points forward** (lens direction)
+
+Both are right-handed coordinate systems, but the axis directions are completely different. The design of ROS's `_frame` and `_optical_frame` is precisely to bridge these two conventions.
+
+---
+
+## Part 2: RealSense's complete frame tree
+
+### Layer structure
+
+Based on [realsense-ros GitHub](https://github.com/IntelRealSense/realsense-ros) and [issue #1099](https://github.com/IntelRealSense/realsense-ros/issues/1099), the TF structure for the RealSense D435 is:
+
+```
+camera_link
+  ├─ camera_depth_frame
+  │    └─ camera_depth_optical_frame
+  ├─ camera_color_frame
+  │    └─ camera_color_optical_frame
+  ├─ camera_infra1_frame
+  │    └─ camera_infra1_optical_frame
+  └─ camera_infra2_frame
+       └─ camera_infra2_optical_frame
+```
+
+**Naming convention:**
+- `<prefix>_<sensor>_frame` → ROS standard coordinates (X forward, Y left, Z up)
+- `<prefix>_<sensor>_optical_frame` → optical coordinates (X right, Y down, Z forward)
+
+> ⚠️ Actual frame names and hierarchy should be verified with `ros2 run tf2_tools view_frames` output — different driver versions may vary slightly.
+
+---
+
+### Exact transform values between each layer
+
+#### `camera_link` → `camera_depth_frame`
+
+Based on [issue #497](https://github.com/IntelRealSense/realsense-ros/issues/497):
+
+```
+translation : (0, 0, 0)
+rotation    : identity (0, 0, 0, 1)
+```
+
+In the RealSense D435 ROS2 driver's runtime TF, the two completely overlap — they are essentially the same position and orientation, both following ROS standard coordinates (X forward, Y left, Z up).
+
+> Note: older URDF/XACRO visualization files had a non-zero offset [0.015, 0.018, 0.013], but this was identified as a bug. In the runtime driver the two are completely coincident.
+>
+> ⚠️ This is specific behavior of the RealSense D435 driver. Other cameras (ZED, Azure Kinect, custom cameras, etc.) may have non-zero translation offsets between `camera_link` and `camera_depth_frame`. Always use `ros2 run tf2_tools view_frames` actual output — never assume they coincide.
+
+---
+
+#### `camera_depth_frame` → `camera_depth_optical_frame`
+
+Based on [issue #1099](https://github.com/IntelRealSense/realsense-ros/issues/1099):
+
+```
+translation : (0, 0, 0)
+rotation (x, y, z, w) : (-0.5, 0.5, -0.5, 0.5)
+```
+
+**Pure rotation, same origin.** The rotation matrix expands to:
+
+```
+R = [[ 0,  0,  1],
+     [-1,  0,  0],
+     [ 0, -1,  0]]
+```
+
+Per-axis verification matches expectation:
+
+| depth_frame direction | After transform | optical_frame meaning |
+|----------------------|-----------------|----------------------|
+| X = forward (1,0,0) | (0,0,1) | Z_optical = forward ✅ |
+| Y = left (0,1,0) | (-1,0,0) | -X_optical = left ✅ |
+| Z = up (0,0,1) | (0,-1,0) | -Y_optical = up ✅ |
+
+---
+
+### Complete frame difference overview
+
+```
+camera_link
+    │  translation=(0,0,0), rotation=identity
+camera_depth_frame          ← coincident with camera_link in RealSense D435 driver, ROS standard coords
+    │  translation=(0,0,0), rotation=(-0.5, 0.5, -0.5, 0.5)
+camera_depth_optical_frame  ← pure rotation, optical coords, point cloud lives here
+```
+
+---
+
+## Part 3: Complete robot frame tree
+
+```
+map
+  └─ odom
+      └─ base_link
+          └─ arm_link_1              ─┐
+              └─ arm_link_2           │ dynamic TF (joint state + URDF)
+                  └─ arm_link_3      ─┘
+                      └─ camera_link          ← static TF (calibration result)
+                           └─ camera_depth_frame           (RealSense D435: coincident with camera_link)
+                                └─ camera_depth_optical_frame  ← point cloud lives here
+```
+
+| TF segment | Type | Determined by |
+|-----------|------|--------------|
+| `base_link → arm_link_1 → … → arm_link_3` | dynamic | joint state + URDF |
+| `arm_link_3 → camera_link` | static | calibration result (v2r inverse) |
+| `camera_link → camera_depth_frame` | static | RealSense driver (identity) |
+| `camera_depth_frame → camera_depth_optical_frame` | static | RealSense driver (rotation) |
+
+---
+
+## Part 4: ICP-based extrinsic calibration pitfall
+
+### Calibration method
+
+We used custom ICP-based extrinsic calibration rather than traditional marker-based AX=XB hand-eye calibration:
+
+1. Capture the robot arm itself with RealSense, obtaining the **actual point cloud**
+2. Read current joint state, reconstruct **theoretical point cloud** in `base_link` space via URDF + forward kinematics
+3. Align actual point cloud to theoretical point cloud with ICP, obtaining transform matrix T
+
+This T is **v2r (vision-to-robot)**:
+
+```
+v2r = T(camera_depth_optical_frame → base_link)
+```
+
+That is: given a point in `camera_depth_optical_frame`, multiplying by v2r gives its coordinates in `base_link`.
+
+### Validation method
+
+With arm stationary, overlay in RViz:
+- **Actual point cloud**: RealSense capture, transformed to `base_link` space via v2r
+- **Theoretical point cloud**: computed from URDF + current joint state
+
+Perfect overlap means correct calibration; systematic offset means the wrong frame was used.
+
+> ⚠️ Arm must be stationary during validation to avoid additional offset from unsynchronized joint state and point cloud timestamps.
+
+### Root cause
+
+The actual point cloud's `frame_id` is `camera_depth_optical_frame` (optical coords: X right, Y down, Z forward), but if the ICP implementation doesn't account for this and mistakenly treats these coordinates as `camera_link` / `camera_depth_frame` (ROS standard coords: X forward, Y left, Z up):
+
+```
+Between camera_link and camera_depth_optical_frame:
+  rotation (x,y,z,w) = (-0.5, 0.5, -0.5, 0.5)
+
+ICP takes a source with wrong orientation, aligns to correct target
+→ computed v2r carries this fixed rotation error
+→ no matter how many calibration samples, the error never disappears
+```
+
+### Fix and TF publishing
+
+After fixing ICP's frame handling, v2r values are correct. When publishing to TF:
+
+```python
+# Correct: publish base_link → camera_link
+# Let RealSense driver continue handling camera_link → camera_depth_optical_frame
+static_tf.header.frame_id = 'base_link'
+static_tf.child_frame_id = 'camera_link'
+# transform value = v2r inverted one level (removes optical→depth rotation)
+```
+
+**Do not publish `base_link → camera_depth_optical_frame` directly** — `camera_depth_optical_frame` would then have two parents (RealSense driver already publishes `camera_depth_frame → camera_depth_optical_frame`), corrupting the TF tree. Reference: [moveit_calibration issue #115](https://github.com/ros-planning/moveit_calibration/issues/115).
+
+---
+
+## Part 5: Debugging toolkit
+
+```bash
+# 1. Confirm actual frame_id of point cloud
+ros2 topic echo /camera/depth/color/points --max-msgs 1 | grep frame_id
+
+# 2. Visualize complete frame tree (generates frames.pdf)
+ros2 run tf2_tools view_frames
+
+# 3. Confirm specific transform exists and values look reasonable
+ros2 run tf2_ros tf2_echo base_link camera_depth_optical_frame
+
+# 4. View static TF published by RealSense
+ros2 topic echo /tf_static --max-msgs 20
+
+# 5. RViz visualization (add TF plugin to inspect axis directions)
+ros2 run rviz2 rviz2
+```
+
+---
+
+## Part 6: Core takeaways
+
+### Three things to remember
+
+1. **In RealSense D435 driver, `camera_link` and `camera_depth_frame` coincide at runtime**, both following ROS standard coordinates; other cameras may differ — verify with `view_frames`
+2. **`camera_depth_frame` and `camera_depth_optical_frame` differ by only one rotation**, quaternion `(-0.5, 0.5, -0.5, 0.5)`, same origin
+3. **ICP source point cloud frame_id is `camera_depth_optical_frame`** — must use it correctly, otherwise v2r carries a systematic rotation error that can never be eliminated
+
+### Debugging checklist
+
+- [ ] `ros2 topic echo` confirms point cloud `frame_id` is `camera_depth_optical_frame`
+- [ ] ICP source coordinates confirmed in optical frame basis (X right, Y down, Z forward)
+- [ ] When publishing calibration result to TF, child frame is `camera_link`, not `camera_depth_optical_frame`
+- [ ] Arm stationary during validation; RViz overlay of theoretical and actual point clouds confirms overlap
+
+---
+
+## References
+
+- [REP 103 — Standard Units of Measure and Coordinate Conventions](https://www.ros.org/reps/rep-0103.html)
+- [realsense-ros — GitHub Repository](https://github.com/IntelRealSense/realsense-ros)
+- [realsense-ros issue #497 — Relationship between camera_link and camera_depth_frame](https://github.com/IntelRealSense/realsense-ros/issues/497)
+- [realsense-ros issue #1099 — Frame orientation confusion (including quaternion_optical values)](https://github.com/IntelRealSense/realsense-ros/issues/1099)
+- [moveit_calibration issue #115 — TF dual-parent problem](https://github.com/ros-planning/moveit_calibration/issues/115)

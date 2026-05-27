@@ -1,0 +1,164 @@
+---
+title: "Calling Codex CLI from Claude Code: A Cross-Model Review Workflow"
+date: 2026-05-25
+tags: [Claude Code, Codex, AI, Developer Tools, PowerShell, Windows]
+summary: How to call OpenAI Codex CLI from inside a Claude Code session for cross-model code review, plus two critical techniques for avoiding stdin deadlocks and encoding issues on Windows.
+draft: false
+---
+
+Claude Code and Codex CLI come from different LLM families. Chaining them together enables **independent cross-model evaluation** — code or docs written by Claude get a second pass from Codex's perspective, catching things Claude's own blind spots miss.
+
+This post covers the practical details of this workflow, particularly the two pitfalls you'll inevitably hit on Windows / PowerShell.
+
+---
+
+## Why cross-model review?
+
+- **Self-blindness**: a model tends to overlook flaws in its own generated output
+- **Second opinion**: having another LLM validate docs or specs you wrote is more convincing
+- **Independent verification**: a second confirmation for architectural decisions and API design
+
+Primary use cases:
+
+| Scenario | Description |
+| --- | --- |
+| Code review | Review uncommitted or committed changes |
+| Doc review | Consistency checks on specs and design docs |
+| Custom evaluation | Specify focus areas and acceptance criteria |
+
+**Not appropriate for**: continuous dialogue (Codex is one-shot), scanning large numbers of files (`grep` is faster and cheaper), anything containing sensitive data (goes through OpenAI, different privacy boundary).
+
+---
+
+## Hard rule: always explicitly redirect stdin in background execution
+
+This is the single most important rule in this entire workflow. Violating it means infinite deadlock.
+
+When `run_in_background: true`, the child process's stdin is a **pipe that never receives EOF**. Codex detects piped stdin and always tries to read from it — even when the prompt has already been passed as a positional argument, Codex will still drain stdin, waiting for EOF. No EOF from a background pipe → **infinite deadlock** (task output stops at `Reading additional input from stdin...` or goes completely blank).
+
+The only solution: always explicitly redirect stdin on every Codex invocation:
+
+| Prompt source | stdin redirect |
+| --- | --- |
+| Custom prompt (read from stdin) | `< "prompt.txt"` |
+| Built-in review (no stdin needed) | `< NUL` (gives EOF immediately) |
+
+PowerShell 5.1 has no `<` operator, so always wrap in `cmd /c '...'`.
+
+---
+
+## Two invocation modes
+
+### Mode A: `codex exec` (most flexible, use for custom reviews)
+
+```
+codex exec [OPTIONS] [PROMPT]
+```
+
+Prompt runs as a general agent task. This allows you to freely describe the scope, focus, and acceptance criteria in your prompt.
+
+### Mode B: `codex exec review` (built-in code review)
+
+```
+codex exec review [OPTIONS]
+```
+
+Codex has specialized prompting for review. Scope flags: `--uncommitted` / `--base <BRANCH>` / `--commit <SHA>`.
+
+**Note**: `codex exec review` has no `-s/--sandbox` and no `-C/--cd` (tested — adding them gives `error: unexpected argument '--sandbox' found`). For custom review prompts, always use Mode A.
+
+---
+
+## Concrete invocation templates
+
+### Template 1: Custom prompt (recommended)
+
+**Step 1** — Write the prompt to a UTF-8 temp file:
+
+```
+Write
+  file_path: C:\Users\<user>\AppData\Local\Temp\codex-prompt.txt
+  content:   <your prompt, can include non-ASCII>
+```
+
+**Step 2** — Run in background:
+
+```powershell
+cmd /c 'codex exec -C "D:\path\to\repo" -s read-only -o "C:\Users\<user>\AppData\Local\Temp\codex-findings.txt" - < "C:\Users\<user>\AppData\Local\Temp\codex-prompt.txt"'
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `-C "D:\path\to\repo"` | codex working root directory |
+| `-s read-only` | sandbox policy (always use this for review) |
+| `-o "<file>"` | write final findings to this file |
+| `-` | positional prompt set to `-`, explicitly means "read from stdin" |
+| `< "prompt.txt"` | stdin redirect (**hard rule**) |
+
+**Step 3** — After the completion notification arrives, read `codex-findings.txt` for results.
+
+### Template 2: Built-in review (quick scan, no customization)
+
+```powershell
+Set-Location 'D:\path\to\repo'
+cmd /c 'codex exec review --uncommitted -o "C:\Users\<user>\AppData\Local\Temp\codex-findings.txt" < NUL'
+```
+
+`< NUL` cannot be omitted — even though review needs no stdin prompt, background stdin still needs an EOF.
+
+---
+
+## Encoding issues on Windows
+
+PowerShell 5.1's `$OutputEncoding` defaults to **US-ASCII**, which governs "PowerShell pipe → native exe" encoding. So:
+
+```powershell
+# ❌ Non-ASCII characters become ???
+"My prompt" | codex exec -
+Get-Content prompt.txt -Encoding UTF8 | codex exec -
+```
+
+`Get-Content -Encoding UTF8` only fixes "file → PowerShell" — it doesn't fix "PowerShell → codex." Lossy ASCII conversion still happens.
+
+The correct approach:
+
+```powershell
+# ✅ cmd /c's < is a byte-level redirect; UTF-8 bytes go into codex unchanged
+cmd /c 'codex exec - < "utf8-prompt.txt"'
+```
+
+`cmd /c '... < file'` bypasses `$OutputEncoding` entirely; UTF-8 file bytes go directly to codex.
+
+If codex output contains `???` or garbled characters → check first whether you used a pipe to feed codex, and switch to file redirect.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Task output stops at `Reading additional input from stdin...` or goes blank | stdin not redirected | `cmd /c '... < "prompt.txt"'` or `< NUL` |
+| Non-ASCII in prompt / output becomes `???` | Used a pipe; PS 5.1 `$OutputEncoding` = US-ASCII | Switch to `cmd /c 'codex ... < "utf8file"'` |
+| `error: unexpected argument '--sandbox' found` | `codex exec review` doesn't accept `--sandbox` | Switch to Mode A: `codex exec -s read-only` |
+| `error: cannot be used with [PROMPT]` | The review subcommand's scope flags are mutually exclusive with custom prompt | For custom review prompt → switch to Mode A |
+| review fails in non-git repo | The review command fails in a non-Git repository by default | Add `--skip-git-repo-check` or switch to Mode A |
+
+---
+
+## Getting output
+
+With `-o <FILE>`, you don't need to fish findings out of task output:
+
+1. **First choice**: Read the file specified by `-o` — this is Codex's final findings, typically dozens to a few hundred lines, clean.
+2. Want to see which files Codex looked at / reasoning → then read the background task's stdout (often 1000+ lines; use `offset` / `limit` to read in chunks).
+
+---
+
+## Summary
+
+The entire workflow comes down to two points:
+
+1. **Always use `< file` redirect for stdin**, never a pipe, so background execution doesn't deadlock
+2. **Use `cmd /c '... < file'` on Windows**, bypassing PowerShell encoding so non-ASCII characters don't corrupt
+
+Everything else is flag details — one look at `codex exec --help` is enough.

@@ -1,0 +1,156 @@
+---
+title: "You Can't Fix Semantic Ambiguity with Validation"
+date: 2026-05-26
+tags: [Architecture, LLM, AI, System Design, Software Engineering]
+summary: "Clear instruction. Task completed. Result wrong — this isn't a bug, it's semantic ambiguity silently failing inside a contract world."
+draft: false
+---
+
+I asked an AI agent to "use Playwright to verify that the layout is correct."
+
+The agent executed. Returned PASS. No error messages.
+
+But it never actually opened a browser and took a screenshot — it reduced the task to "run layout verifier → get report" and called it done.
+
+Clear instruction. Task completed. Result wrong.
+
+No one reported an error because from the system's perspective, everything looked right.
+
+This isn't a bug. It's semantic ambiguity silently failing inside a contract world.
+
+## Why did no one report an error?
+
+"Use Playwright to verify the layout" is a semantic instruction — it carries intent: open a browser, take a screenshot, confirm visually.
+
+But the agent pipeline processed it as a contract: layout verifier ran → got PASS/FAIL → task complete.
+
+The validation layer passed. But the semantic meaning was never correctly translated.
+
+The problem isn't that any single step failed. It's that semantic ambiguity was never explicitly translated into a contract before entering execution. It passed through every layer quietly, carrying the wrong interpretation.
+
+## Deterministic systems are built on contracts
+
+Deterministic systems rest on a fundamental assumption:
+
+```
+Same input
+→ Same output
+→ Traceable failure
+→ Explainable reasoning
+```
+
+That's a contract.
+
+The power of a contract: when it fails, you know where it failed and why. The reliability of an entire system is built on this traceability.
+
+Rule-based systems, API schemas, type systems, unit tests — these are all different forms of contracts. What they have in common: **ambiguity is not permitted to enter**.
+
+## Semantic interpretation is meaning negotiation
+
+Semantic interpretation isn't a contract. It's meaning negotiation.
+
+"Use Playwright to verify the layout" has no single correct interpretation. Its meaning depends on:
+- The speaker's intent
+- The listener's background knowledge
+- The current context
+- Shared understanding of the word "verify"
+
+This isn't a bug — it's the nature of language.
+
+Semantic systems live inside ambiguity. Contract systems assume ambiguity doesn't exist.
+
+These aren't just different technical choices — **they are two different epistemologies**.
+
+## You can't fix it with a validation layer
+
+The instinctive reaction is: add more validation.
+
+But validation can only check whether a contract was satisfied. It cannot fill a semantic gap because it doesn't know the semantic gap exists.
+
+In the Playwright example:
+- Add validation confirming the agent executed ✓
+- Add validation confirming a PASS/FAIL was returned ✓
+- Add validation confirming a screenshot file exists ✓
+
+But none of these ask: "did you do what I actually meant?"
+
+**Validation only verifies contract execution. It cannot translate semantic intention.**
+
+What you need isn't more validation — it's an explicit **semantic-to-contract translation layer**.
+
+## What a translation layer looks like
+
+The translation layer's job: before a semantic instruction enters execution, convert it into an explicit contract.
+
+For the Playwright example, a translation layer would transform:
+
+> "Use Playwright to verify that the layout is correct"
+
+into:
+
+```
+1. Launch browser instance
+2. Navigate to target URL
+3. Take screenshot and save
+4. Verify table selector exists and is visible
+5. Verify code block has syntax highlighting class
+6. Return screenshot path to main conversation
+```
+
+This contract is verifiable. More importantly: **it makes the semantic gap visible** — if the translation is wrong, the error happens in the translation layer rather than silently disappearing in execution.
+
+## This isn't just an LLM problem
+
+This conflict appears at any boundary where human intent meets system execution:
+
+- LLM agents accepting natural language instructions
+- Recommendation systems accepting fuzzy preferences
+- Autonomous systems accepting high-level goals
+- Any API translating unstructured human inputs into structured schemas
+
+Every boundary is a seam between the semantic world and the contract world.
+
+This boundary is becoming increasingly common as we rapidly feed semantic instructions to system executors — LLMs, AI agents, automation tools — without recognizing the fundamental difference between these two worlds.
+
+| Semantic World | Contract World |
+|---|---|
+| Intent | Spec |
+| Meaning | Type |
+| Preference | Constraint |
+| Ambiguity | Determinism |
+| Interpretation | Execution |
+
+## The translation layer's endpoint: encode it as code
+
+After analyzing the Playwright failure, we discussed how to fix the layout verification workflow.
+
+The instinct was: write the Definition of Done (DoD) more clearly, make the agent's prompt more explicit.
+
+But a deeper question emerged: **why use an agent for a purely mechanical task?**
+
+Layout verification needs no semantic interpretation. The six steps listed in the previous section are fixed — they don't change based on context. That's the definition of a contract.
+
+It should live in code, not in instructions to an LLM.
+
+```bash
+node scripts/verify-layout.js <slug>
+# → screenshots saved to /tmp/verify-<slug>-*.png
+# → console output PASS/FAIL + per-check results
+# → exit code 1 on failure
+```
+
+The script itself is the completed form of the translation layer. It translates "verify that the layout is correct" — a semantic instruction — once and for all into a fixed set of contracts, encoded directly in the script. Every subsequent execution uses the same contract with no room for interpretation, and no LLM tokens consumed.
+
+Using an agent for this task actually re-introduces semantic ambiguity — you're using a semantic instruction to tell an instruction-interpreting system to do something that needs no interpretation. That loop is itself the source of the problem.
+
+**When a task is mechanical, the endpoint of translation should be code, not a natural language prompt.**
+
+## Conclusion
+
+The Playwright failure wasn't a technical problem. It was an architectural one.
+
+Semantic ambiguity won't be caught by the validation layer because validation only looks at contracts. It will pass through quietly, carrying the wrong interpretation all the way to execution, producing a result that looks successful but is actually wrong.
+
+The fix isn't more validation. It's making the translation layer visible — turning the semantic-to-contract conversion into an explicit, auditable step, rather than having every system component silently guess at each other's intent.
+
+This is where the next generation of software architecture gets genuinely hard: not making LLMs more accurate, but designing a boundary that can absorb the fundamental conflict between the semantic world and the contract world.

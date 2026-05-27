@@ -1,0 +1,466 @@
+---
+title: "Transform Direction Semantics: Why Calibration Results Sometimes Need Inversion Before Publishing to TF"
+date: 2026-05-15
+tags: [ROS2, Robotics, Coordinate Systems, TF, Computer Vision, Calibration, ICP, OpenCV]
+summary: One of the most difficult classes of bugs to diagnose in robot vision systems — transforms that are numerically reasonable, don't throw errors, but display as visually mirrored or wildly misaligned. These problems almost always trace to one root cause — mixed active/passive transform semantics, or getting TF parent/child direction wrong. This post analyzes what symptoms appear when each direction is wrong, using two real cases, plus a two-step decision framework you can apply directly.
+draft: false
+---
+
+## Part 1: What active and passive mean
+
+### The most intuitive distinction
+
+Given a rotation matrix R, there are two completely different ways to use it:
+
+**Active transform**
+
+> The point moves; the coordinate frame stays fixed.
+
+```
+p' = R × p
+```
+
+Physical meaning: rotate point p to new position p'. Both are described in the same coordinate frame.
+
+**Passive transform**
+
+> The point doesn't move; the coordinate frame changes.
+
+```
+p_B = R × p_A
+```
+
+Physical meaning: the same physical point — in frame A it's p_A, in frame B it's p_B. The point didn't move; we're just describing it from a different angle.
+
+### The key relationship
+
+Active and passive use **mutually inverse** rotations:
+
+```
+R_passive = R_active⁻¹ = R_activeᵀ  (for rotation matrices, inverse equals transpose)
+```
+
+### Why matrices that look identical have different semantics
+
+```
+Active:   p' = R × p     (p is rotated to a new position)
+Passive:  p_B = R × p_A  (same point, different frame representation)
+```
+
+Both equations have the exact same form. Without being told which convention this R follows, you can't tell from the equation alone — **the code runs, numbers are in a reasonable range, but the semantics are wrong**.
+
+---
+
+## Part 2: ROS2 TF uses passive convention
+
+`lookup_transform(target_frame, source_frame)` returns a transform T satisfying:
+
+```
+p_target = T × p_source
+```
+
+Same physical point — in `source_frame` it's p_source, in `target_frame` it's p_target. TF never "moves points" — it just describes them in a different coordinate frame.
+
+When you publish a static TF:
+
+```python
+tf_msg.header.frame_id = 'base_link'     # parent
+tf_msg.child_frame_id  = 'camera_link'   # child
+tf_msg.transform       = T
+```
+
+The semantics of this T are:
+
+> "The transform needed to convert points in `camera_link` to `base_link`."
+
+---
+
+## Part 3: Two-step decision framework
+
+Before publishing any calibration result to TF, walk through these two steps. **The steps are independent — each can go wrong separately, and the symptoms differ.**
+
+### Step 1: Determine the TF tree hierarchy
+
+> Who is parent? Who is child?
+
+Determined by the **robot's physical structure**, not by math:
+
+```
+base_link (robot base)
+  └─ camera_link (camera)   ← camera is a child node of the base
+```
+
+### Step 2: Confirm T's direction
+
+> Does the T you have satisfy `p_parent = T × p_child`?
+
+- **Yes** → publish directly, no inversion needed
+- **No** → first `T = inv(T)`, then publish
+
+---
+
+## Part 4: Case 1 — ICP
+
+### ICP output semantics
+
+ICP calibration setup:
+
+- **Source**: camera point cloud, in `camera_depth_optical_frame` coordinates
+- **Target**: theoretical point cloud reconstructed from URDF + FK, in `base_link` coordinates
+
+ICP solves for T such that:
+
+```
+T × p_camera ≈ p_base
+```
+
+Applying the two-step framework:
+
+- **Step 1:** parent = `base_link`, child = `camera_depth_optical_frame` ✅
+- **Step 2:** T satisfies `p_base = T × p_camera` ✅
+
+→ **T can be published directly, no inversion needed.**
+
+> **Why does ICP output happen not to need inversion?**
+> Not because ICP is a "passive algorithm" — it's because of our problem setup: source in camera frame, target in base frame. ICP naturally produces a T satisfying TF's requirements. If source/target were swapped, the output would be reversed.
+
+---
+
+### If Step 1 is configured in reverse
+
+```python
+# Wrong: parent/child swapped
+static_tf.header.frame_id = 'camera_link'   # ❌
+static_tf.child_frame_id  = 'base_link'     # ❌
+static_tf.transform       = T_icp
+```
+
+`lookup_transform('base_link', 'camera_link')` now returns `inv(T_icp)` instead of `T_icp`.
+
+**What happens mathematically:**
+
+```
+Correct: p_base = T_icp × p_camera
+Reversed: p_base = inv(T_icp) × p_camera
+```
+
+`inv(T_icp)` is the transform that moves base points to camera space. Using it to transform camera point cloud sends points in the wrong direction.
+
+**Symptoms:**
+
+Assuming the camera is 0.5m in front and 0.2m to the right of the robot:
+
+```
+Correct T_icp effect: camera point → appears 0.5m in front of base_link
+inv(T_icp) effect: camera point → appears 0.5m behind base_link (mirror position)
+```
+
+The entire point cloud appears mirrored — the mirror axis depends on the camera's mounting position relative to the robot, not necessarily a simple left-right flip.
+
+---
+
+### If Step 2 goes wrong (ICP source/target swapped)
+
+If ICP's source and target are accidentally swapped:
+
+```python
+# Wrong: source and target reversed
+result = icp(source=theoretical_cloud, target=actual_camera_cloud)
+```
+
+ICP outputs T satisfying:
+
+```
+T × p_base ≈ p_camera
+```
+
+Which is `inv(T_icp)`. Step 2 is now wrong and T needs inversion before use — but the symptom is identical to Step 1 being filled in backwards: mirrored point cloud.
+
+**These two errors have the same symptom but different root causes and different fixes.**
+
+Diagnosis: use the origin test in [Appendix D](#d-uncertain-about-t-direction--use-the-origin-test) to confirm T's direction, then determine whether Step 1 or Step 2 is the problem.
+
+---
+
+### If both Step 1 and Step 2 are wrong simultaneously (most dangerous case)
+
+```python
+# Step 2 wrong: T is inv(T_icp)
+# Step 1 wrong: parent/child also reversed
+static_tf.header.frame_id = 'camera_link'   # ❌
+static_tf.child_frame_id  = 'base_link'     # ❌
+static_tf.transform       = inv(T_icp)      # ❌
+```
+
+TF sees parent/child reversed, and inverses again on lookup:
+
+```
+lookup_transform('base_link', 'camera_link')
+  = inv(inv(T_icp))
+  = T_icp   ← the correct value!
+```
+
+**Two errors cancel each other out; point cloud display is completely correct.**
+
+This is the hardest case to detect. It only explodes in other contexts — for example, when this TF is chained to other nodes, or when other code directly queries `lookup_transform('camera_link', 'base_link')`, they'll get the wrong result.
+
+> **Engineering implication:** "Result looks correct" doesn't mean the implementation is correct. TF parent/child semantics affect the entire tree, not just a single query direction.
+
+---
+
+## Part 5: Case 2 — OpenCV solvePnP
+
+Almost everyone doing camera-robot calibration or AR marker localization has hit this one.
+
+### solvePnP output semantics
+
+`cv2.solvePnP` outputs `rvec` and `tvec` with semantics:
+
+```
+p_camera = R × p_world + t
+```
+
+Transforms world (or robot base) points to camera space — this is **active convention**.
+
+Applying the two-step framework:
+
+- **Step 1:** parent = `base_link`, child = `camera_link` ✅
+- **Step 2:** T satisfies `p_camera = T × p_world` — direction is **reversed** ❌
+
+→ **Invert T, then publish.**
+
+---
+
+### If Step 2 skips the inversion (publish directly)
+
+```python
+# Wrong: using solvePnP result directly
+R_mat, _ = cv2.Rodrigues(rvec)
+tvec = tvec.reshape(3, 1)
+
+static_tf.header.frame_id = 'base_link'
+static_tf.child_frame_id  = 'camera_link'
+static_tf.transform.rotation    = quaternion_from_matrix(R_mat)  # ❌
+static_tf.transform.translation = tvec                            # ❌
+```
+
+**What happens mathematically:**
+
+solvePnP's `tvec` represents "the world origin's position in camera coordinate space," not "the camera origin's position in world coordinate space."
+
+Concrete example:
+
+```
+Actual situation: camera is 0.5m in front and 0.3m above the robot
+solvePnP's tvec: approximately [-0.5, -0.3, ...] (machine origin in camera space)
+
+After publishing directly, TF thinks camera_link is at position [-0.5, -0.3, ...] in base_link
+Actual camera_link should be at [0.5, 0, 0.3]
+```
+
+**Symptoms:**
+
+Camera frame appears roughly in "the negative direction of the expected position" — if the camera should be above-forward of the robot, it appears behind-below. Rotation direction is also reversed.
+
+When using the converted point cloud against a theoretical model: the point cloud appears nearly symmetric to the theoretical model about some axis, but not a simple mirror.
+
+---
+
+### Correct approach (including SE(3) inverse explanation)
+
+```python
+R_mat, _ = cv2.Rodrigues(rvec)
+tvec = tvec.reshape(3, 1)  # OpenCV sometimes returns (3,1), sometimes (3,) — normalize first
+
+# solvePnP gives p_camera = R × p_world + t (active)
+# Need to invert, formula is SE(3) inverse:
+#
+#   T = [R  | t]    →    T⁻¹ = [Rᵀ | -Rᵀt]
+#       [0  | 1]               [0  |  1  ]
+#
+# Note: translation part is NOT simply negated — must multiply by Rᵀ first
+R_inv = R_mat.T
+t_inv = -R_inv @ tvec
+
+static_tf.header.frame_id = 'base_link'
+static_tf.child_frame_id  = 'camera_link'
+static_tf.transform.rotation    = quaternion_from_matrix(R_inv)
+static_tf.transform.translation = t_inv.flatten()
+```
+
+---
+
+### If Step 1 is also filled in backwards
+
+```python
+# Both steps wrong
+static_tf.header.frame_id = 'camera_link'  # ❌
+static_tf.child_frame_id  = 'base_link'    # ❌
+static_tf.transform       = T_pnp          # not inverted ❌
+```
+
+Same as the ICP case — two errors cancel out. `lookup_transform('base_link', 'camera_link')` may accidentally return the correct result, but TF tree semantics are wrong, and it will break in other query directions or other nodes.
+
+---
+
+### Four-combination symptom comparison
+
+| Step 1 | Step 2 | Symptom |
+|--------|--------|---------|
+| ✅ Correct | ✅ Correct | Point clouds aligned, display correct |
+| ❌ Reversed | ✅ Correct | Point cloud mirrored |
+| ✅ Correct | ❌ Not inverted | Point cloud appears at "negative direction" of expected position |
+| ❌ Reversed | ❌ Not inverted | **Looks correct on the surface, but semantics wrong — breaks with different query direction** |
+
+---
+
+## Part 6: Field validation
+
+### Method 1: Origin test (before publishing)
+
+```python
+# Multiply child frame's origin by T — should give child's physical position in parent
+origin = np.array([0, 0, 0, 1])
+result = T @ origin
+print("child frame origin in parent frame:", result[:3])
+# Compare: where is the camera actually mounted on the robot?
+```
+
+### Method 2: RViz or frontend visualization (after publishing)
+
+| Observed phenomenon | Most likely cause | Fix |
+|--------------------|--------------------|-----|
+| Point clouds aligned | Correct | — |
+| Point cloud mirrored | Step 1 reversed, or Step 2 source/target swapped | Confirm with origin test, then fix |
+| Point cloud at negative direction of expected position | Step 2 not inverted (common with solvePnP) | Invert T |
+| Point cloud looks right but breaks with different query direction | Step 1 and Step 2 both wrong (canceling out) | Re-confirm parent/child and T direction |
+| Frame doesn't appear at all | TF tree broken | `ros2 run tf2_tools view_frames` to confirm structure |
+
+---
+
+## Core takeaways
+
+### Three things to remember
+
+1. **Active = point moves; Passive = frame changes** — same mathematical form, completely different semantics
+2. **ROS2 TF is always passive**: `lookup_transform(A, B)` returns T satisfying `p_A = T × p_B`
+3. **Step 1 and Step 2 can fail independently with different symptoms; both wrong simultaneously may appear correct on the surface — that's the most dangerous case**
+
+---
+
+## Appendix: Step-by-step reference lookup
+
+**Where to start:**
+- Don't know where to begin → start at **[A]**, follow in order
+- Know T's source but uncertain about direction → jump directly to **[D]** for origin test
+- Already published TF but display is wrong → jump directly to **[E]** for symptom-based lookup
+
+---
+
+### A. First confirm where your T comes from
+
+| Source | T semantics | Next step |
+|--------|-------------|-----------|
+| ICP (source=camera, target=robot) | `p_robot = T × p_camera` | → [B] |
+| OpenCV `solvePnP` (rvec, tvec) | `p_camera = T × p_world` | → [C] |
+| Return value of `lookup_transform(A, B)` | `p_A = T × p_B` | → [B] |
+| Custom FK / URDF | Depends on how you compute it | → [D] |
+| Other uncertain source | Uncertain | → [D] |
+
+---
+
+### B. T direction correct (`p_parent = T × p_child`) → publish directly
+
+```python
+static_tf.header.frame_id = 'parent_frame'
+static_tf.child_frame_id  = 'child_frame'
+static_tf.transform       = T
+```
+
+**Confirm parent/child hierarchy matches robot's physical structure.**
+
+---
+
+### C. T direction reversed (`p_child = T × p_parent`) → invert first, then publish
+
+```python
+# General approach
+T_inv = np.linalg.inv(T)
+
+# SE(3) analytical formula (numerically more stable):
+R = T[:3, :3]
+t = T[:3, 3:]
+R_inv = R.T
+t_inv = -R_inv @ t      # translation is NOT simply negated — multiply R_inv first
+
+static_tf.header.frame_id = 'parent_frame'
+static_tf.child_frame_id  = 'child_frame'
+static_tf.transform       = T_inv
+```
+
+---
+
+### D. Uncertain about T direction → use the origin test
+
+```python
+origin = np.array([0, 0, 0, 1])
+result = T @ origin
+print("child frame origin in parent frame:", result[:3])
+```
+
+| Result | Means | Next step |
+|--------|-------|-----------|
+| Matches child's physical position | T direction correct | → [B] |
+| Mirror or negative of physical position | T direction reversed | → [C] |
+| Close to (0, 0, 0) | parent/child may be reversed, re-check Step 1 | Swap frame_id |
+| Very large values or NaN | T itself has problems (singular matrix, uninitialized) | Go back and check calibration pipeline |
+
+---
+
+### E. Display wrong after publishing → symptom-based fix
+
+```
+Symptom 1: Point cloud mirrored
+  → Step 1 reversed or Step 2 source/target swapped
+  → Use [D] to confirm T direction, then decide whether to fix parent/child or invert T
+
+Symptom 2: Point cloud at negative direction of expected position (front→back, up→down)
+  → Step 2 not inverted (most common with solvePnP)
+  → Return to [C], invert T
+
+Symptom 3: Point cloud looks right but breaks with different query direction
+  → Step 1 and Step 2 both wrong, canceling out
+  → Re-walk from [A], don't rely on surface appearance
+
+Symptom 4: Frame doesn't appear at all
+  → TF tree broken
+  → ros2 run tf2_tools view_frames to confirm structure
+
+Symptom 5: Frame position correct but rotation direction wrong
+  → Optical frame problem (camera_depth_frame vs camera_depth_optical_frame)
+  → Reference: ROS2 Frame Tree article
+```
+
+---
+
+### F. Common scenario quick reference
+
+| Scenario | Step 1 (parent → child) | Inversion needed? | Notes |
+|----------|-------------------------|-------------------|-------|
+| ICP source=camera, target=base | base_link → camera_optical | No | T direction already meets TF requirements |
+| ICP source=base, target=camera | base_link → camera_optical | **Yes** | source/target swapped, T direction reversed |
+| OpenCV solvePnP | base_link → camera_link | **Yes** | active convention |
+| Re-publishing lookup_transform result | Same as original target → source | No | Already in TF format |
+| hand-eye calibration, eye-in-hand | end_effector → camera_link | Check tool docs | "T_cam_to_ee" → yes; "T_ee_to_cam" → no; uncertain → use [D] |
+| hand-eye calibration, eye-to-hand | base_link → camera_link | Check tool docs | "T_cam_to_base" → yes; "T_base_to_cam" → no; uncertain → use [D] |
+
+---
+
+## References
+
+- [REP 103 — Standard Units of Measure and Coordinate Conventions](https://www.ros.org/reps/rep-0103.html)
+- [ROS2 TF2 — lookup_transform documentation](https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Adding-A-Frame-Py.html)
+- [OpenCV solvePnP documentation](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html#ga549c2075fac14829ff4a58bc931c033d)
+- [realsense-ros issue #1099 — Frame orientation confusion](https://github.com/IntelRealSense/realsense-ros/issues/1099)
+- [moveit_calibration issue #115 — TF dual-parent problem](https://github.com/ros-planning/moveit_calibration/issues/115)
+- Previous post: [Frame Trees in ROS2: The Complete Journey from Optical Frame to End Node](/en/blog/ros2-frame-tree-optical-calibration)
