@@ -44,6 +44,13 @@ async function verify(slug, baseUrl) {
     screenshots.push(fullPath)
 
     const bodyText = await page.locator('body').innerText()
+    // Text outside code blocks — used for encoding check to avoid false positives
+    // from intentional "???" examples in troubleshooting articles.
+    const proseText = await page.evaluate(() => {
+      const clone = document.body.cloneNode(true)
+      clone.querySelectorAll('pre, code').forEach(el => el.remove())
+      return clone.innerText || ''
+    })
 
     // Check: H1 exists
     const h1 = await page.locator('h1').first()
@@ -114,7 +121,7 @@ async function verify(slug, baseUrl) {
       { pattern: /ï¿½/, label: 'ï¿½ (replacement char)' },
       { pattern: /�/, label: '\\uFFFD (Unicode replacement char)' },
     ]
-    const garbled = garbledPatterns.find(({ pattern }) => pattern.test(bodyText))
+    const garbled = garbledPatterns.find(({ pattern }) => pattern.test(proseText))
     if (garbled) {
       failures.push(`Encoding: garbled text found — "${garbled.label}"`)
     } else {

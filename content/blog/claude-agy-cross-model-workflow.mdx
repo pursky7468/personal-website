@@ -200,7 +200,8 @@ $cwd = (Get-Location).Path
 $prefix = if ($Agentic) {
     "respond to the following"
 } else {
-    "Based only on the text I provide below. Do not use any tools, web search, or read any files."
+    "Based only on the text I provide below. " +
+    "Do not use any tools, web search, or read any files."
 }
 
 $tmpFile = [System.IO.Path]::GetTempFileName()
@@ -208,17 +209,19 @@ $tmpFile = [System.IO.Path]::GetTempFileName()
 
 try {
     $toolFlag = if ($Agentic) { "--dangerously-skip-permissions" } else { "" }
-    $cmd = 'agy --print "' + $prefix + '" ' + $toolFlag + ' < "' + $tmpFile + '"'
+    $cmd = 'agy --print "' + $prefix + '" ' + `
+        $toolFlag + ' < "' + $tmpFile + '"'
     cmd /c $cmd
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } finally {
     Remove-Item $tmpFile -ErrorAction SilentlyContinue
 }
 
-$convFile = "$env:USERPROFILE\.gemini\antigravity-cli\cache\last_conversations.json"
+$agyCacheDir = "$env:USERPROFILE\.gemini\antigravity-cli"
+$convFile = "$agyCacheDir\cache\last_conversations.json"
 $convId = (Get-Content $convFile -Raw | ConvertFrom-Json)."$cwd"
 
-$transcript = "$env:USERPROFILE\.gemini\antigravity-cli\brain\$convId\.system_generated\logs\transcript.jsonl"
+$transcript = "$agyCacheDir\brain\$convId\.system_generated\logs\transcript.jsonl"
 
 Get-Content $transcript -Encoding UTF8 |
     ForEach-Object { $_ | ConvertFrom-Json } |
