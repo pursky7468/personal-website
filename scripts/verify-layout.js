@@ -1,4 +1,4 @@
-// Usage: node scripts/verify-layout.js <slug> [--local]
+// Usage: node scripts/verify-layout.js <slug> [--local] [--locale zh-TW|en]
 //
 // Checks that a blog post renders correctly on the live site:
 //   - Page loads (non-404)
@@ -6,6 +6,8 @@
 //   - Code blocks have syntax highlighting tokens
 //   - No garbled encoding (???, â€, replacement chars)
 //   - H1 heading exists
+//
+// --locale en  → verifies /en/blog/<slug> (default: /zh-TW/blog/<slug>)
 //
 // Saves screenshots to the system temp directory and prints their paths.
 // Exits with code 1 if any check fails.
@@ -18,8 +20,9 @@ const os = require('os')
 const PROD_BASE = 'https://personal-website-pursky7468s-projects.vercel.app'
 const LOCAL_BASE = 'http://localhost:3001'
 
-async function verify(slug, baseUrl) {
-  const url = `${baseUrl}/blog/${slug}`
+async function verify(slug, baseUrl, locale) {
+  const url = locale ? `${baseUrl}/${locale}/blog/${slug}` : `${baseUrl}/blog/${slug}`
+  const screenshotSlug = locale ? `${slug}-${locale}` : slug
   const tmpDir = os.tmpdir()
   const screenshots = []
   const failures = []
@@ -39,7 +42,7 @@ async function verify(slug, baseUrl) {
     }
 
     // Full-page screenshot
-    const fullPath = path.join(tmpDir, `verify-${slug}-full.png`)
+    const fullPath = path.join(tmpDir, `verify-${screenshotSlug}-full.png`)
     await page.screenshot({ path: fullPath, fullPage: true })
     screenshots.push(fullPath)
 
@@ -69,7 +72,7 @@ async function verify(slug, baseUrl) {
     } else {
       console.log(`  [PASS] Tables: ${tableCount} HTML table(s), no raw pipes`)
       if (tableCount > 0) {
-        const tablePath = path.join(tmpDir, `verify-${slug}-table.png`)
+        const tablePath = path.join(tmpDir, `verify-${screenshotSlug}-table.png`)
         await page.locator('table').first().screenshot({ path: tablePath })
         screenshots.push(tablePath)
       }
@@ -97,7 +100,7 @@ async function verify(slug, baseUrl) {
         const lines = text.split('\n').length
         if (lines > maxLines) { maxLines = lines; longestIndex = i }
       }
-      const codePath = path.join(tmpDir, `verify-${slug}-code.png`)
+      const codePath = path.join(tmpDir, `verify-${screenshotSlug}-code.png`)
       await pres.nth(longestIndex).scrollIntoViewIfNeeded()
       const box = await pres.nth(longestIndex).boundingBox()
       if (box) {
@@ -158,13 +161,15 @@ async function verify(slug, baseUrl) {
 const args = process.argv.slice(2)
 const slug = args.find(a => !a.startsWith('--'))
 const useLocal = args.includes('--local')
+const localeIdx = args.indexOf('--locale')
+const locale = localeIdx >= 0 ? args[localeIdx + 1] : null
 
 if (!slug) {
-  console.error('Usage: node scripts/verify-layout.js <slug> [--local]')
+  console.error('Usage: node scripts/verify-layout.js <slug> [--local] [--locale zh-TW|en]')
   process.exit(1)
 }
 
-verify(slug, useLocal ? LOCAL_BASE : PROD_BASE).catch(err => {
+verify(slug, useLocal ? LOCAL_BASE : PROD_BASE, locale).catch(err => {
   console.error('Error:', err.message)
   process.exit(1)
 })
