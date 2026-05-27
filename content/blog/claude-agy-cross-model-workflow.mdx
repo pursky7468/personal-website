@@ -1,0 +1,262 @@
+---
+title: "Claude Code × agy 跨模型協作：踩坑全記錄"
+date: 2026-05-27
+tags: [Claude Code, Gemini, AI, PowerShell, Windows, Multi-Agent]
+summary: "記錄用 Claude Code 整合 agy（Gemini CLI）建立跨模型協作工作流的完整過程，包含踩了哪些坑、為什麼踩、以及如何修好。"
+draft: false
+---
+
+和 Codex CLI 跨模型協作的 blog post 寫完之後，很自然地想把相同的模式套到 agy 上。agy 是 Antigravity CLI 的命令名稱，也就是 Google Gemini CLI 的一個版本，已經用 OAuth 認證、有 Google AI Pro 訂閱，auth 問題不用另外處理。
+
+目標是：讓 Claude Code 能夠呼叫 agy，把文件或計劃丟給它 review，或是讓它平行做一些 Claude 不擅長的任務（例如需要大 context window 的分析）。
+
+聽起來很簡單。結果踩了七個坑。
+
+## 坑 1：跳過文件直接開測
+
+第一個動作是搜尋 `gemini --version`、`npx @google/gemini-cli --version`，然後研究 flag。沒有先確認命令名稱。
+
+花了一段時間找 `gemini` binary 在哪裡、npm 全域有沒有裝、PATH 裡有沒有。找不到，繞了很大一圈。
+
+使用者最後直接在 cmd 打 `agy`，畫面出現：
+
+```
+▄▀▀▄        Antigravity CLI 1.0.2
+purskyrone@gmail.com (Google AI Pro)
+Gemini 3.5 Flash (Medium)
+```
+
+命令是 `agy`，不是 `gemini`。這個資訊本來第一步就應該問清楚。
+
+**教訓**：整合新工具第一步是確認命令名稱，不是直接猜測或查 npm。
+
+## 坑 2：沒讀 auth 說明就使用付費方案
+
+在測試 headless 認證時，看到 agy 的錯誤訊息提示幾個 env var：`GEMINI_API_KEY`、`GOOGLE_GENAI_USE_VERTEXAI`、`GOOGLE_GENAI_USE_GCA`。
+
+準備直接跑 `$env:GOOGLE_GENAI_USE_GCA = "true"`。
+
+使用者叫停：「那個不是說會另外付費嗎？你測模式之前都不先看一下相關的資料嗎？」
+
+GCA = Gemini Code Assist，是需要組織授權的企業付費方案。實際上不需要任何額外設定——agy 本來就有 Windows keyring 靜默認證機制，OAuth token 已經存在 keyring 裡，`--print` headless 模式自動讀取，完全免費。
+
+| Auth 方式 | 費用 | Headless 可用 |
+|---|---|---|
+| Google OAuth（個人帳號）| 免費，1000 req/day | keyring 靜默認證 ✅ |
+| Gemini API Key | 免費 tier 可用 | ✅ |
+| GCA（Code Assist）| 企業付費 | ✅ 但要花錢 |
+| Vertex AI | GCP 計費 | ✅ 但要花錢 |
+
+**教訓**：任何 auth flag 使用前，先查清楚計費模式。`USE_GCA`、`USE_VERTEXAI` 這種 flag 名稱是紅燈，要先停下來確認。
+
+## 坑 3：stdout 捕捉假設完全錯誤
+
+和 Codex CLI 不同，Codex 有 `-o <file>` 可以把結果寫到檔案。agy 沒有這個 flag。
+
+假設 stdout redirect 或 pipe 可以捕捉輸出。測了一輪：
+
+```powershell
+# 測試 1：cmd /c redirect
+cmd /c "agy --print '...' > out.txt 2>&1 < NUL"
+# 結果：out.txt 是 0 bytes
+
+# 測試 2：PS pipe
+agy --print "..." 2>&1 | Out-File out.txt
+# 結果：out.txt 是 0 bytes
+
+# 測試 3：Start-Job（確認是否 stdin 阻塞）
+Start-Job { agy --print "say hi" } | Wait-Job -Timeout 15
+# 結果：有完成，但 Receive-Job 沒有輸出
+```
+
+看 log 才發現：API 確實被呼叫了，model 也回應了，但 agy 是 TUI 應用，輸出透過 Windows Console API（WriteConsoleW）直接寫 terminal buffer。`>`、pipe、`2>&1` 全都捕捉不到，因為這些是 file descriptor，Console API 完全繞過它們。
+
+**解法**：agy 把完整的對話記錄存在 `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`。這才是正確的輸出來源。
+
+```jsonl
+{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Hi"}
+```
+
+`last_conversations.json` 對應 CWD → conversation ID：
+
+```json
+{"C:\\GitSource\\personal-website\\content\\blog": "b60b99aa-..."}
+```
+
+**教訓**：TUI 應用走 Console API，不走 stdout。假設 stdout 可捕捉前，先用一個最小測試確認。
+
+## 坑 4：用舊工具的框架套新工具
+
+前三個坑解決之後，開始做架構評估：subagent、hook、MCP，哪個最好？
+
+給出了詳細的評估表格，結論是 subagent，因為可以 on-demand、帶 context，跟 Codex 的 pattern 一致。
+
+使用者連問了三次：
+
+- 「應該有更好的方式吧？」
+- 「真的沒有更好的利用方式嗎？」
+- 「你現在多了一個別的部門的團隊可以使喚，你會想怎麼用它？」
+
+這才意識到問題所在：一直把 agy 當 Codex 的替代品，思維框架是「review tool」。
+
+Gemini 和 Codex 有一個關鍵差異：1M token context window。這不是換個 reviewer，而是一個可以做 Claude 做不到的事情的平行 worker——分析整個 codebase、大量文件摘要、需要超長 context 的任務。
+
+正確的思維：
+
+```
+❌ Claude 做完 → agy review → Claude 拿結果（sequential）
+
+✅ Claude 做 Task A（實作）
+   agy 同時做 Task B（大 context 分析）← 真正平行
+   最後 Claude 整合
+```
+
+**教訓**：整合新工具時，先理解它跟現有工具的差異，再決定 pattern。不要直接套用舊 pattern。
+
+## 坑 5：`--dangerously-skip-permissions` 不加思索
+
+在 review 場景測試時，為了確保 agy 能順利執行，在 script 裡加了 `--dangerously-skip-permissions`。
+
+這個 flag 的意思是：所有工具呼叫自動核准，不問。
+
+傳入一篇 blog post 請 agy review，結果：
+
+```
+Entry types:
+PLANNER_RESPONSE   74
+CODE_ACTION        32
+RUN_COMMAND        28
+SEARCH_WEB          4
+VIEW_FILE           8
+ERROR_MESSAGE       2
+Total steps: 150
+```
+
+agy 開始自主搜尋網路、執行命令、讀取檔案，跑了 150 個 step。最後沒有任何文字回應——所有 PLANNER_RESPONSE 都是 `tool_calls`，沒有 `content`。
+
+Review 場景根本不需要工具。提供文字讓 agy 分析，它應該直接回應，不需要去搜尋或執行任何東西。
+
+**解法**：
+1. 不加 `--dangerously-skip-permissions`
+2. Prompt 明確指示：「Based only on the text I provide. Do not use any tools, web search, or read any files.」
+
+**教訓**：`--dangerously-skip-permissions` 不是「讓它正常跑」的 flag，是「讓它做任何事都不問你」的 flag。Review 場景用它等於請人 review 一份文件，但他跑去自己查資料、執行程式、上網搜尋，最後忘記回答你的問題。
+
+## 坑 6：PowerShell pipe 讓 agy 無聲 crash
+
+Script 寫完，從 Claude Code 呼叫，agy log 是 0 bytes。
+
+問題：Claude Code 的 PowerShell tool 在執行時，stdout/stderr 是 pipe（不是 TTY）。直接呼叫 `agy --print` 時，agy 偵測到 stderr 是 pipe 而不是 terminal，立即 crash——連 log 開頭的啟動訊息都沒有寫出來。
+
+完全沒有錯誤訊息。0 bytes log 是唯一線索。
+
+之前的測試都是直接從 cmd 執行，那個環境沒有 pipe，所以沒發現這個問題。
+
+**解法**：`cmd /c` 包起來，stdin 用 `<` 重導向到 temp file：
+
+```powershell
+$cmd = 'agy --print "respond to the following" < "' + $tmpFile + '"'
+cmd /c $cmd
+```
+
+`cmd /c` 建立的 child process 繼承 cmd 的 stdio，而不是 PS 的 pipe，agy 不會偵測到 broken pipe。
+
+**教訓**：TUI 應用對 stdio 環境很敏感。從腳本環境呼叫時，要預期它可能因為 pipe 偵測而 crash，且通常沒有明顯錯誤訊息。
+
+## 坑 7：transcript 欄位結構假設
+
+從 transcript.jsonl 讀取回應時，假設所有 `PLANNER_RESPONSE` 都有 `content` 欄位：
+
+```powershell
+Where-Object { $_.type -eq "PLANNER_RESPONSE" } |
+Select-Object -Last 1 -ExpandProperty content
+```
+
+在簡單問答（沒有工具）時可以，但 agentic 模式下的 `PLANNER_RESPONSE` 有 `tool_calls` 而沒有 `content`。Script 直接拋出：
+
+```
+Property "content" cannot be found.
+```
+
+**解法**：加上欄位存在的檢查：
+
+```powershell
+Where-Object { $_.type -eq "PLANNER_RESPONSE" -and $_.PSObject.Properties.Name -contains "content" }
+```
+
+## 最終解法
+
+`C:\Users\<user>\scripts\agy-ask.ps1`：
+
+```powershell
+param(
+    [Parameter(Position = 0, Mandatory = $true)]
+    [string]$Prompt,
+    [switch]$Agentic
+)
+
+$cwd = (Get-Location).Path
+
+$prefix = if ($Agentic) {
+    "respond to the following"
+} else {
+    "Based only on the text I provide below. Do not use any tools, web search, or read any files."
+}
+
+$tmpFile = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($tmpFile, $Prompt, [System.Text.Encoding]::UTF8)
+
+try {
+    $toolFlag = if ($Agentic) { "--dangerously-skip-permissions" } else { "" }
+    $cmd = 'agy --print "' + $prefix + '" ' + $toolFlag + ' < "' + $tmpFile + '"'
+    cmd /c $cmd
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+} finally {
+    Remove-Item $tmpFile -ErrorAction SilentlyContinue
+}
+
+$convFile = "$env:USERPROFILE\.gemini\antigravity-cli\cache\last_conversations.json"
+$convId = (Get-Content $convFile -Raw | ConvertFrom-Json)."$cwd"
+
+$transcript = "$env:USERPROFILE\.gemini\antigravity-cli\brain\$convId\.system_generated\logs\transcript.jsonl"
+
+Get-Content $transcript -Encoding UTF8 |
+    ForEach-Object { $_ | ConvertFrom-Json } |
+    Where-Object { $_.type -eq "PLANNER_RESPONSE" -and $_.PSObject.Properties.Name -contains "content" } |
+    Select-Object -Last 1 -ExpandProperty content
+```
+
+使用方式：
+
+```powershell
+# Review 場景（純文字分析，無工具）
+$content = Get-Content "plan.md" -Raw -Encoding UTF8
+& "$env:USERPROFILE\scripts\agy-ask.ps1" "Review this plan for gaps:`n$content"
+
+# Agentic 場景（開工具，適合研究類任務）
+& "$env:USERPROFILE\scripts\agy-ask.ps1" "Research best practices for X" -Agentic
+```
+
+## 之後如何避免
+
+**整合新工具前**：
+- 先問命令名稱，或 `where.exe <name>` 確認 binary 存在
+- 任何 auth flag 使用前，先確認計費模式
+- 先看文件的「Output」和「Auth」章節，不是「Features」
+
+**假設 stdout 可捕捉之前**：
+- 先跑一個 `agy --print "hi" > test.txt` 確認 bytes 數
+- TUI 應用幾乎都不走 stdout，要找 log/cache 目錄
+
+**加任何 permission flag 之前**：
+- `--dangerously-skip-permissions` = 自動核准所有工具，review 場景是錯的
+- 先想清楚這個任務需不需要工具，不需要就不要給
+
+**從腳本環境呼叫 CLI 工具**：
+- 先在 Claude Code 的 PS 環境直接測一次，確認不 crash
+- 0-byte log = process 在 log 寫入前就 crash，通常是 stdio 環境問題
+- `cmd /c` 是 Windows 上處理這類問題的標準繞法
+
+**讀 transcript 或其他 JSON 輸出**：
+- 不要假設欄位一定存在，用 `-contains` 先檢查
+- 工具模式和純回應模式的 schema 不同
