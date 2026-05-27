@@ -77,7 +77,7 @@ Start-Job { agy --print "say hi" } | Wait-Job -Timeout 15
 {"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Hi"}
 ```
 
-`last_conversations.json` 對應 CWD → conversation ID：
+`~/.gemini/antigravity-cli/cache/last_conversations.json` 對應 CWD → conversation ID，每次 `--print` 執行後都會更新：
 
 ```json
 {"C:\\GitSource\\personal-website\\content\\blog": "b60b99aa-..."}
@@ -236,6 +236,8 @@ $content = Get-Content "plan.md" -Raw -Encoding UTF8
 # Agentic 場景（開工具，適合研究類任務）
 & "$env:USERPROFILE\scripts\agy-ask.ps1" "Research best practices for X" -Agentic
 ```
+
+`-Agentic` 模式刻意重新開啟 `--dangerously-skip-permissions`，這是坑 5 裡那個造成 150 步暴走的同一個 flag。差別在於用途不同：research 任務本來就需要 agy 去搜尋和讀取資料，工具呼叫是預期行為。Review 場景不需要工具，所以預設關閉。使用 `-Agentic` 前要清楚這個代價。
 
 ## 之後如何避免
 
