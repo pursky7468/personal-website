@@ -48,8 +48,8 @@ async function verify(slug, baseUrl) {
     // from intentional "???" examples in troubleshooting articles.
     const proseText = await page.evaluate(() => {
       const clone = document.body.cloneNode(true)
-      clone.querySelectorAll('pre, code').forEach(el => el.remove())
-      return clone.innerText || ''
+      clone.querySelectorAll('pre, code, script, style').forEach(el => el.remove())
+      return clone.innerText || clone.textContent || ''
     })
 
     // Check: H1 exists
