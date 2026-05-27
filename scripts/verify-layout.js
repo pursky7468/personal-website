@@ -11,6 +11,7 @@
 // Exits with code 1 if any check fails.
 
 const { chromium } = require('playwright')
+const fs = require('fs')
 const path = require('path')
 const os = require('os')
 
@@ -79,8 +80,30 @@ async function verify(slug, baseUrl) {
       } else {
         console.log(`  [PASS] Code blocks: ${preCount} block(s), ${tokenCount} highlight tokens`)
       }
+      // Screenshot the longest pre element (most lines) with padding to reveal overflow
+      const pres = page.locator('pre')
+      const count = await pres.count()
+      let longestIndex = 0
+      let maxLines = 0
+      for (let i = 0; i < count; i++) {
+        const text = await pres.nth(i).innerText()
+        const lines = text.split('\n').length
+        if (lines > maxLines) { maxLines = lines; longestIndex = i }
+      }
       const codePath = path.join(tmpDir, `verify-${slug}-code.png`)
-      await page.locator('pre').first().screenshot({ path: codePath })
+      await pres.nth(longestIndex).scrollIntoViewIfNeeded()
+      const box = await pres.nth(longestIndex).boundingBox()
+      if (box) {
+        const pad = 20
+        const vp = page.viewportSize() || { width: 1280, height: 900 }
+        const x = Math.max(0, box.x - pad)
+        const y = Math.max(0, box.y - pad)
+        const width = Math.min(vp.width - x, box.width + pad * 2)
+        const height = Math.min(box.height + pad * 2, 1200)
+        await page.screenshot({ path: codePath, clip: { x, y, width, height } })
+      } else {
+        await pres.nth(longestIndex).screenshot({ path: codePath })
+      }
       screenshots.push(codePath)
     }
 
@@ -104,6 +127,14 @@ async function verify(slug, baseUrl) {
 
   console.log('\n--- Screenshots (MUST READ each file below for visual inspection) ---')
   screenshots.forEach(p => console.log(' ', p))
+
+  // Write baseline cache so ensure-baseline.js hook knows verify was run recently
+  const cacheDir = path.join(__dirname, '../.verify-cache')
+  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(cacheDir, `${slug}-${Date.now()}.json`),
+    JSON.stringify({ slug, timestamp: new Date().toISOString(), url: `${baseUrl}/blog/${slug}`, passed: failures.length === 0 })
+  )
 
   if (failures.length > 0) {
     console.log('\nFAIL')

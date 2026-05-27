@@ -26,6 +26,7 @@ Blog 工作流由兩個 agent + 一個 script 分工：
 
 - 四個步驟是同一次發佈的完整流程，**不可拆開**
 - 每個步驟完成後，不等使用者確認，立刻接著跑下一步
+- **git push 後不可問使用者何時執行 verify-layout.js**：立刻用 `ScheduleWakeup(90)` 排程，90 秒後自動跑，不需要使用者介入
 - 四者結果合併為一份報告，最後一起呈現給使用者
 - 單獨呼叫「review」= reviewer + verify-layout script + 視覺確認全跑，缺一不可
 - **Layout 驗證必須用 `node scripts/verify-layout.js`，不使用 `web-layout-verifier` agent**

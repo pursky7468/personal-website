@@ -49,4 +49,7 @@ next-env.d.ts
 playwright-report
 test-results
 
+# Blog layout baseline cache (local only)
+.verify-cache/
+
 .vercel

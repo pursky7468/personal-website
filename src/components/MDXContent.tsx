@@ -9,7 +9,7 @@ interface MDXContentProps {
 export function MDXContent({ code }: MDXContentProps) {
   const MDXComponent = useMDXComponent(code)
   return (
-    <article className="prose prose-neutral dark:prose-invert max-w-none prose-code:font-mono prose-pre:bg-neutral-900 prose-pre:border">
+    <article className="prose prose-neutral dark:prose-invert max-w-none prose-code:font-mono prose-pre:bg-neutral-900 prose-pre:border prose-pre:overflow-x-auto">
       <MDXComponent />
     </article>
   )
