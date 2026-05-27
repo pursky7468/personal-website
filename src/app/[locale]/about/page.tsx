@@ -1,30 +1,38 @@
-import type { Metadata } from "next"
-import { Mail } from "lucide-react"
-import { GithubIcon } from "@/components/icons"
-import { Badge } from "@/components/ui/badge"
-import { AnimateIn } from "@/components/AnimateIn"
-import aboutData from "@/data/about.json"
-import skillsData from "@/data/skills.json"
+import type { Metadata } from 'next'
+import { Mail } from 'lucide-react'
+import { useTranslations } from 'next-intl'
+import { getTranslations } from 'next-intl/server'
+import { GithubIcon } from '@/components/icons'
+import { Badge } from '@/components/ui/badge'
+import { AnimateIn } from '@/components/AnimateIn'
+import skillsData from '@/data/skills.json'
 
-export const metadata: Metadata = {
-  title: "About",
-  description: "About Steve Lin — automation engineer exploring AI and LLM tooling.",
+export async function generateMetadata({
+  params,
+}: {
+  params: { locale: string }
+}): Promise<Metadata> {
+  const t = await getTranslations({ locale: params.locale, namespace: 'meta' })
+  return { title: 'About', description: t('aboutDescription') }
 }
 
 export default function AboutPage() {
+  const t = useTranslations('about')
+  const bio = t.raw('bio') as string[]
+
   return (
     <div className="mx-auto max-w-5xl px-4 sm:px-6 py-16 space-y-12">
       <AnimateIn>
         <section>
-          <h1 className="text-3xl font-bold tracking-tight mb-4">About</h1>
+          <h1 className="text-3xl font-bold tracking-tight mb-4">{t('title')}</h1>
           <div className="space-y-3">
-            {aboutData.bio.map((paragraph, i) => (
+            {bio.map((paragraph, i) => (
               <p
                 key={i}
                 className={
-                  i === aboutData.bio.length - 1
-                    ? "font-medium text-foreground"
-                    : "text-muted-foreground leading-relaxed"
+                  i === bio.length - 1
+                    ? 'font-medium text-foreground'
+                    : 'text-muted-foreground leading-relaxed'
                 }
               >
                 {paragraph}
@@ -36,23 +44,26 @@ export default function AboutPage() {
 
       <AnimateIn delay={0.1}>
         <section>
-          <h2 className="text-xl font-semibold mb-4">Currently Exploring</h2>
-          <p className="text-muted-foreground">{aboutData.currentlyExploring}</p>
+          <h2 className="text-xl font-semibold mb-4">{t('currentlyExploring')}</h2>
+          <p className="text-muted-foreground">{t('currentlyExploringText')}</p>
         </section>
       </AnimateIn>
 
       <AnimateIn delay={0.15}>
         <section>
-          <h2 className="text-xl font-semibold mb-6">Tech I Use</h2>
+          <h2 className="text-xl font-semibold mb-6">{t('techIUse')}</h2>
           <div className="space-y-8">
             {Object.entries(skillsData).map(([group, categories]) => (
               <div key={group}>
                 <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-4">
-                  {group === "Professional" ? "Professional" : "Personal / Exploring"}
+                  {group === 'Professional' ? t('professional') : t('exploring')}
                 </p>
                 <div className="space-y-3">
                   {Object.entries(categories).map(([category, items]) => (
-                    <div key={category} className="flex flex-col sm:flex-row sm:items-start gap-2">
+                    <div
+                      key={category}
+                      className="flex flex-col sm:flex-row sm:items-start gap-2"
+                    >
                       <span className="text-sm font-medium text-muted-foreground w-32 shrink-0 pt-0.5">
                         {category}
                       </span>
@@ -74,7 +85,7 @@ export default function AboutPage() {
 
       <AnimateIn delay={0.2}>
         <section>
-          <h2 className="text-xl font-semibold mb-4">Get in Touch</h2>
+          <h2 className="text-xl font-semibold mb-4">{t('getInTouch')}</h2>
           <div className="flex gap-3">
             <a
               href="https://github.com/pursky7468"

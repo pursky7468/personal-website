@@ -10,9 +10,10 @@ interface ProjectCardProps {
   tags: string[]
   slug: string
   github?: string
+  locale: string
 }
 
-export function ProjectCard({ title, description, tags, slug, github }: ProjectCardProps) {
+export function ProjectCard({ title, description, tags, slug, github, locale }: ProjectCardProps) {
   return (
     <Card className="flex flex-col hover:shadow-md transition-shadow">
       <CardHeader>
@@ -29,7 +30,7 @@ export function ProjectCard({ title, description, tags, slug, github }: ProjectC
         </div>
         <div className="flex items-center gap-3">
           <Link
-            href={`/projects/${slug}`}
+            href={`/${locale}/projects/${slug}`}
             className="flex items-center gap-1 text-sm text-primary hover:underline"
           >
             Read more<span className="sr-only"> about {title}</span>

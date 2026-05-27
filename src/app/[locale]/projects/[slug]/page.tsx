@@ -1,20 +1,24 @@
-import type { Metadata } from "next"
-import { notFound } from "next/navigation"
-import Link from "next/link"
-import { ArrowLeft } from "lucide-react"
-import { GithubIcon } from "@/components/icons"
-import { allProjects } from "contentlayer/generated"
-import { MDXContent } from "@/components/MDXContent"
-import { Badge } from "@/components/ui/badge"
+import type { Metadata } from 'next'
+import { notFound } from 'next/navigation'
+import Link from 'next/link'
+import { ArrowLeft } from 'lucide-react'
+import { useTranslations } from 'next-intl'
+import { GithubIcon } from '@/components/icons'
+import { allProjects } from 'contentlayer/generated'
+import { MDXContent } from '@/components/MDXContent'
+import { Badge } from '@/components/ui/badge'
+import { routing } from '@/i18n/routing'
 
 interface Props {
-  params: { slug: string }
+  params: { slug: string; locale: string }
 }
 
 export function generateStaticParams() {
-  return allProjects
-    .filter((p) => !p.draft)
-    .map((p) => ({ slug: p.slug }))
+  return routing.locales.flatMap((locale) =>
+    allProjects
+      .filter((p) => !p.draft)
+      .map((p) => ({ locale, slug: p.slug }))
+  )
 }
 
 export function generateMetadata({ params }: Props): Metadata {
@@ -28,16 +32,17 @@ export function generateMetadata({ params }: Props): Metadata {
 }
 
 export default function ProjectPage({ params }: Props) {
+  const t = useTranslations('projects')
   const project = allProjects.find((p) => p.slug === params.slug && !p.draft)
   if (!project) notFound()
 
   return (
     <div className="mx-auto max-w-3xl px-4 sm:px-6 py-16">
       <Link
-        href="/projects"
+        href={`/${params.locale}/projects`}
         className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-8 transition-colors"
       >
-        <ArrowLeft className="h-3 w-3" /> All projects
+        <ArrowLeft className="h-3 w-3" /> {t('title')}
       </Link>
 
       <header className="mb-10">

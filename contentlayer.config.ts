@@ -2,6 +2,18 @@ import { defineDocumentType, makeSource } from 'contentlayer2/source-files'
 import rehypePrettyCode from 'rehype-pretty-code'
 import remarkGfm from 'remark-gfm'
 
+// Derive base slug by stripping the lang suffix: "slug.zh-TW" → "slug"
+function deriveSlug(flattenedPath: string): string {
+  const base = flattenedPath.replace(/^blog\//, '')
+  return base.replace(/\.(zh-TW|en)$/, '')
+}
+
+// Derive lang from filename: "slug.zh-TW.mdx" → "zh-TW", "slug.mdx" → "zh-TW" (legacy default)
+function deriveLang(sourceFileName: string): string {
+  const match = sourceFileName.match(/\.(zh-TW|en)\.mdx$/)
+  return match ? match[1] : 'zh-TW'
+}
+
 const Post = defineDocumentType(() => ({
   name: 'Post',
   filePathPattern: 'blog/**/*.mdx',
@@ -14,13 +26,21 @@ const Post = defineDocumentType(() => ({
     draft: { type: 'boolean', default: false },
   },
   computedFields: {
+    lang: {
+      type: 'string',
+      resolve: (doc) => deriveLang(doc._raw.sourceFileName),
+    },
     slug: {
       type: 'string',
-      resolve: (doc) => doc._raw.flattenedPath.replace('blog/', ''),
+      resolve: (doc) => deriveSlug(doc._raw.flattenedPath),
     },
     url: {
       type: 'string',
-      resolve: (doc) => `/blog/${doc._raw.flattenedPath.replace('blog/', '')}`,
+      resolve: (doc) => {
+        const lang = deriveLang(doc._raw.sourceFileName)
+        const slug = deriveSlug(doc._raw.flattenedPath)
+        return `/${lang}/blog/${slug}`
+      },
     },
   },
 }))
