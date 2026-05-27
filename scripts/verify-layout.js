@@ -102,7 +102,7 @@ async function verify(slug, baseUrl) {
     await browser.close()
   }
 
-  console.log('\n--- Screenshots ---')
+  console.log('\n--- Screenshots (MUST READ each file below for visual inspection) ---')
   screenshots.forEach(p => console.log(' ', p))
 
   if (failures.length > 0) {
@@ -110,7 +110,10 @@ async function verify(slug, baseUrl) {
     failures.forEach(f => console.log('  ✗', f))
     process.exit(1)
   } else {
-    console.log('\nPASS')
+    console.log('\nPASS — automated checks passed.')
+    console.log('⚠ NEXT STEP: Use the Read tool on every screenshot path above.')
+    console.log('  Text PASS does not confirm visual correctness (background, spacing, contrast).')
+    console.log('  Verification is NOT complete until screenshots are visually inspected.')
   }
 }
 
