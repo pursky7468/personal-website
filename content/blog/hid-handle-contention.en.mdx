@@ -243,11 +243,6 @@ Get-CimInstance Win32_StartupCommand |
   Format-List
 ```
 
-**Long-term recommendations (for vendors)**:
-
-To the LensConnect team: When `HidSmbus_Open` fails, distinguish between "device genuinely not found" and "device exists but is exclusively locked (sharing violation)". Different errors deserve different messages.
-
-To the darkFlash team: darkFlash DN-D.exe scans and exclusively opens HID device objects that don't belong to darkFlash hardware. Consider filtering by VID/PID, manufacturer string, or HID usage page, and avoid holding handles to third-party devices for extended periods.
 
 ---
 

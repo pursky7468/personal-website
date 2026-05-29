@@ -243,11 +243,6 @@ Get-CimInstance Win32_StartupCommand |
   Format-List
 ```
 
-**長期建議（給廠商）**：
-
-給 LensConnect 廠商：`HidSmbus_Open` 失敗時，應區分「裝置真的不存在」與「裝置存在但被排他鎖定（sharing violation）」，給出不同的錯誤訊息，方便現場快速定位。
-
-給 darkFlash 廠商：darkFlash DN-D.exe 在執行期間掃描並排他開啟了非 darkFlash 裝置的 HID object。建議加入 VID/PID / manufacturer / usage page 篩選，不要長時間持有非自家裝置的 handle。
 
 ---
 
