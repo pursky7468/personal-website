@@ -7,8 +7,10 @@
 //   - No garbled encoding (???, â€, replacement chars)
 //   - H1 heading exists
 //
-// --locale en  → verifies /en/blog/<slug> (default: /zh-TW/blog/<slug>)
+// --local       → uses http://localhost:3001 instead of the production URL
+// --locale en   → verifies /en/blog/<slug> (default: /zh-TW/blog/<slug>)
 //
+// Reads baseUrl from blog-publish.config.json in the project root.
 // Saves screenshots to the system temp directory and prints their paths.
 // Exits with code 1 if any check fails.
 
@@ -17,8 +19,17 @@ const fs = require('fs')
 const path = require('path')
 const os = require('os')
 
-const PROD_BASE = 'https://personal-website-pursky7468s-projects.vercel.app'
 const LOCAL_BASE = 'http://localhost:3001'
+
+function loadConfig() {
+  const configPath = path.join(process.cwd(), 'blog-publish.config.json')
+  if (!fs.existsSync(configPath)) {
+    console.error('Error: blog-publish.config.json not found in project root.')
+    console.error('Run setup.js to create it, or copy blog-publish.config.example.json.')
+    process.exit(1)
+  }
+  return JSON.parse(fs.readFileSync(configPath, 'utf8'))
+}
 
 async function verify(slug, baseUrl, locale) {
   const url = locale ? `${baseUrl}/${locale}/blog/${slug}` : `${baseUrl}/blog/${slug}`
@@ -90,7 +101,7 @@ async function verify(slug, baseUrl, locale) {
       } else {
         console.log(`  [PASS] Code blocks: ${preCount} block(s), ${tokenCount} highlight tokens`)
       }
-      // Screenshot the longest pre element (most lines) with padding to reveal overflow
+      // Screenshot the longest pre element (most lines) with padding
       const pres = page.locator('pre')
       const count = await pres.count()
       let longestIndex = 0
@@ -138,12 +149,12 @@ async function verify(slug, baseUrl, locale) {
   console.log('\n--- Screenshots (MUST READ each file below for visual inspection) ---')
   screenshots.forEach(p => console.log(' ', p))
 
-  // Write baseline cache so ensure-baseline.js hook knows verify was run recently
-  const cacheDir = path.join(__dirname, '../.verify-cache')
+  // Write baseline cache
+  const cacheDir = path.join(process.cwd(), '.verify-cache')
   if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true })
   fs.writeFileSync(
     path.join(cacheDir, `${slug}-${Date.now()}.json`),
-    JSON.stringify({ slug, timestamp: new Date().toISOString(), url: `${baseUrl}/blog/${slug}`, passed: failures.length === 0 })
+    JSON.stringify({ slug, timestamp: new Date().toISOString(), url, passed: failures.length === 0 })
   )
 
   if (failures.length > 0) {
@@ -169,7 +180,8 @@ if (!slug) {
   process.exit(1)
 }
 
-verify(slug, useLocal ? LOCAL_BASE : PROD_BASE, locale).catch(err => {
+const config = loadConfig()
+verify(slug, useLocal ? LOCAL_BASE : config.baseUrl, locale).catch(err => {
   console.error('Error:', err.message)
   process.exit(1)
 })
