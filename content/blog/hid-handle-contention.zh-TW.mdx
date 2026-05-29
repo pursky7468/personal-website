@@ -75,26 +75,9 @@ InstanceId   : USB\VID_10C4&PID_8D08\[SERIAL]
 
 用 Procmon，filter 鎖 LensConnect process name，觀察 GUI 啟動流程。
 
-看到 LensConnect 有載入這些 DLL：
+確認 `SLABHIDtoSMBus.dll` 和 `SLABHIDDevice.dll` 有被載入，表示 SDK 初始化有跑。但整個啟動流程中，**沒有看到任何 `CreateFile` 到 `\\?\HID#VID_10C4&PID_8D08...`**，沒有 `DeviceIoControl`，沒有 `ReadFile / WriteFile`。
 
-```text
-SLABHIDtoSMBus.dll
-SLABHIDDevice.dll
-hid.dll
-setupapi.dll
-cfgmgr32.dll
-devobj.dll
-```
-
-也有查詢 HID device interface class root registry：
-
-```text
-HKLM\System\CurrentControlSet\Control\DeviceClasses\{4d1e55b2-f16f-11cf-88cb-001111000030}
-```
-
-但沒有看到任何 `CreateFile` 到 `\\?\HID#VID_10C4&PID_8D08...`，沒有 `DeviceIoControl`，沒有 `ReadFile / WriteFile`。
-
-**判斷**：App 有進入 SDK 初始化流程，但沒走到實際的 HID I/O。問題更早發生——在 enumeration / open 階段。
+**判斷**：App 有進入 SDK 初始化，但沒有走到實際的 HID I/O。問題發生在更早的 enumeration / open 階段。
 
 ---
 

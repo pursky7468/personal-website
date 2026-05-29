@@ -75,24 +75,7 @@ They have a parent-child relationship: `USB\...` is the physical USB device; `HI
 
 Using Procmon with a filter on the LensConnect process name, observing the GUI startup sequence.
 
-LensConnect loaded these DLLs:
-
-```text
-SLABHIDtoSMBus.dll
-SLABHIDDevice.dll
-hid.dll
-setupapi.dll
-cfgmgr32.dll
-devobj.dll
-```
-
-It also queried the HID device interface class root registry key:
-
-```text
-HKLM\System\CurrentControlSet\Control\DeviceClasses\{4d1e55b2-f16f-11cf-88cb-001111000030}
-```
-
-But there was no `CreateFile` to `\\?\HID#VID_10C4&PID_8D08...`, no `DeviceIoControl`, no `ReadFile` or `WriteFile`.
+`SLABHIDtoSMBus.dll` and `SLABHIDDevice.dll` were loaded — SDK initialization ran. But throughout the entire launch sequence, **there was no `CreateFile` to `\\?\HID#VID_10C4&PID_8D08...`**, no `DeviceIoControl`, no `ReadFile` or `WriteFile`.
 
 **Verdict**: The app entered SDK initialization but never reached actual HID I/O. The failure happens earlier — during device enumeration or open.
 
