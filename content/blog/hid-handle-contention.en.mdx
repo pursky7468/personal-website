@@ -81,27 +81,7 @@ Using Procmon with a filter on the LensConnect process name, observing the GUI s
 
 ---
 
-## Layer 3: Is the Lens Still on the USB Bus?
-
-To rule out USB-layer issues, captured traffic with Wireshark + USBPcap from the moment LensConnect launched until `Device not found` appeared.
-
-USBPcap showed the Lens:
-
-```text
-VID: 10C4
-PID: 8D08
-Interface class: HID
-Interrupt IN endpoint:  0x81
-Interrupt OUT endpoint: 0x01
-```
-
-But during the entire launch-to-failure window, no HID endpoint commands appeared.
-
-**Verdict**: USB layer is normal. The Lens didn't disappear. The GUI failed before sending a single HID command.
-
----
-
-## Layer 4: Where Exactly Does the SDK Fail?
+## Layer 3: Where Exactly Does the SDK Fail?
 
 LensConnect controls the Lens through the SLABHIDtoSMBus SDK. The GUI only says `Device not found`, which tells us nothing. Wrote a diagnostic tool to call each SDK API individually and print return codes:
 
@@ -241,7 +221,6 @@ After closing darkFlash DN-D.exe: LensConnect works normally
 ## Ruled-Out Directions
 
 - Windows can't see the Lens → Ruled out (PnP present, ProblemCode=0)
-- Lens missing from USB bus → Ruled out (USBPcap confirmed HID descriptor present)
 - Wrong driver binding (oemXX.inf) → Ruled out (active binding is Microsoft input.inf)
 - Driver cleanup would help → Ruled out (no OEM driver to remove)
 - HID path itself broken → Ruled out (Direct HID shared open succeeded, all data readable)

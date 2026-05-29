@@ -81,27 +81,7 @@ InstanceId   : USB\VID_10C4&PID_8D08\[SERIAL]
 
 ---
 
-## 第三層：USB bus 上 Lens 還在嗎？
-
-為了確認 USB 層本身，用 Wireshark + USBPcap 在 LensConnect 啟動到 `Device not found` 這段時間抓封包。
-
-USBPcap 有看到 Lens：
-
-```text
-VID: 10C4
-PID: 8D08
-Interface class: HID
-Interrupt IN endpoint:  0x81
-Interrupt OUT endpoint: 0x01
-```
-
-但 GUI 啟動到錯誤這段期間，完全沒有任何 HID endpoint command 出現。
-
-**判斷**：USB bus 層正常，Lens 沒有消失。GUI 在發出第一個 HID command 之前就已經結束了。
-
----
-
-## 第四層：SDK 在哪一步失敗？
+## 第三層：SDK 在哪一步失敗？
 
 LensConnect 透過 SLABHIDtoSMBus SDK 操作 Lens。GUI 只顯示 `Device not found`，資訊量太少。寫一個 diagnostic tool，直接逐一呼叫 SDK API 並印出 return code：
 
@@ -241,7 +221,6 @@ LensConnect GUI：Device not found，SN list 空白
 ## 已排除的方向
 
 - Windows 看不到 Lens → 已排除（PnP present，ProblemCode=0）
-- USB bus 無 Lens → 已排除（USBPcap 有看到 HID descriptor）
 - Driver 綁錯 oemXX.inf → 已排除（active binding 是 Microsoft input.inf）
 - Driver cleanup 可解決 → 已排除（沒有可刪的 OEM driver）
 - HID path 本身壞掉 → 已排除（Direct HID shared open 成功，資料完整）
