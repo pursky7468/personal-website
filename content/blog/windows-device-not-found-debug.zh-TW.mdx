@@ -1,0 +1,166 @@
+---
+title: "Device not found：一場 Windows HID 偵錯的完整偵察記錄"
+date: 2026-05-29
+tags: [Windows, Debugging, HID, USB, Device Manager, SLABHIDtoSMBus, Hardware]
+summary: 一台工業相機控制器在客戶端出現 Device not found，本地端正常。記錄從 Event Log 到 Device Instance ID、從 PID 追 Handle、到最終找出 SLABHIDtoSMBus 驅動衝突的完整排查過程。
+draft: false
+---
+
+## 第一封錯誤回報
+
+訊息很短：「設備找不到，但 Device Manager 裡看起來是正常的。」
+
+這句話本身就是一個謎。Device Manager 顯示正常代表 Windows 認得這個設備、驅動載入成功、沒有黃色驚嘆號。但應用程式說 Device not found。這兩件事不應該同時為真——除非「找」的方式不同。
+
+附件截圖確認：相機控制器（Computar 系列鏡頭，透過 LensConnect 控制）在 Device Manager 裡顯示完好，沒有錯誤。darkFlash DN-D.exe 啟動後立刻彈出錯誤視窗，停在初始化階段。
+
+我在本地端接上同款設備，啟動同版本軟體：一切正常。
+
+這是最壞的那種 bug：**可重現，但只在客戶端可重現。**
+
+---
+
+## 從 Event Log 開始
+
+遠端診斷的第一步永遠是 Event Log。
+
+請客戶開 `eventvwr.msc`，篩選 System log，時間範圍鎖在軟體啟動那一分鐘。找到兩筆：
+
+```
+Source: Application Error
+Event ID: 1000
+Faulting application: DN-D.exe
+Exception code: 0xc0000005
+```
+
+0xc0000005 是 Access Violation——程式在某個記憶體地址讀寫失敗。這通常不是「設備找不到」的症狀，比較像是拿到一個 NULL handle 之後還嘗試操作它。
+
+第二筆更有意思：
+
+```
+Source: Microsoft-Windows-DriverFrameworks-UserMode
+Event ID: 10110
+A problem has occurred with your device driver software.
+Device: USB\VID_10C4&PID_EA80
+```
+
+VID `10C4` 是 Silicon Labs。PID `EA80` 是 CP2112——一顆 USB HID 轉 SMBus 的橋接晶片，SLABHIDtoSMBus 驅動的目標設備。
+
+這不是相機或鏡頭的 VID/PID。這是中間層的通訊橋接。
+
+---
+
+## 追 Instance ID
+
+請客戶在 Device Manager 開啟「View → Devices by connection」，找到那個 CP2112，右鍵 Properties → Details → Device Instance ID。
+
+回傳的字串是一個 USB 路徑，格式：
+
+```
+USB\VID_10C4&PID_EA80\{instance_hash}
+```
+
+同時請他開 `devmgmt.msc` 的 Hidden devices（View → Show hidden devices），確認有沒有重影設備（ghost device）——同一 VID/PID 出現兩次以上，其中一個帶有黃色驚嘆號但被隱藏。
+
+結果：**有兩個 CP2112 實體，一個 active，一個 hidden with code 45**（Device was not migrated due to partial or ambiguous match）。
+
+Code 45 通常出現在設備曾經接在不同 USB port、Windows 留下舊的設備記錄、新的連接沒有清乾淨舊記錄的情況。這本身不應該導致應用程式崩潰——除非應用程式打開設備的方式是用 `SetupDiEnumDeviceInterfaces` 枚舉所有符合 GUID 的 interface，拿到第一個就用，而第一個恰好是那個 hidden dead instance。
+
+---
+
+## 用 PID 追 Handle
+
+這時我需要確認：軟體到底拿到哪一個 handle？
+
+請客戶在軟體崩潰前的那一刻，開 `procexp64.exe`（Sysinternals Process Explorer），找到 DN-D.exe 的 process，開 Handle view（Ctrl+H），篩選 `\Device\`。
+
+回傳的 handle 清單裡有一個：
+
+```
+\Device\{pdo_path}
+```
+
+PDO 路徑格式指向的是那個 dead hidden instance 的 Physical Device Object，而不是 active 的那個。確認了：**軟體枚舉到的是殭屍設備。**
+
+接著在 Device Manager 對那個 hidden instance 右鍵 Uninstall device（勾選「Delete the driver software for this device」），重新拔插 USB，讓 Windows 重新枚舉。
+
+重啟軟體。
+
+正常啟動。
+
+---
+
+## 為什麼本地端不會發生
+
+本地端的機器是全新安裝，那台設備從來沒接在其他 USB port 過。客戶端的機器使用了超過兩年，中間換過一次 USB hub、移過工作站位置。每次換 port，Windows 都會留下一筆舊的設備記錄。累積到某個時間點，枚舉順序剛好讓 dead instance 排在前面。
+
+這是 Windows 設備枚舉的一個老問題：`SetupDiEnumDeviceInterfaces` 的返回順序不保證是「最近使用」或「active 優先」，而是依照內部 registry 順序。驅動開發者通常應該枚舉所有 interface、嘗試 open、失敗就換下一個，而不是假設第一個就是對的。
+
+---
+
+## 系統化排查摘要
+
+以下是這類「Device Manager 正常但應用程式找不到設備」問題的通用排查步驟：
+
+### 1. 確認錯誤層級
+
+| 症狀 | 可能層級 |
+|---|---|
+| Device Manager 有黃色驚嘆號 | 驅動層問題 |
+| Device Manager 正常，軟體找不到 | 應用層枚舉問題 |
+| Device Manager 正常，軟體崩潰 | Handle 操作問題（通常是 NULL handle） |
+
+### 2. Event Log 關鍵篩選
+
+- **System log**：DriverFrameworks-UserMode（Event ID 10110）
+- **Application log**：Exception code 0xc0000005（Access Violation）
+- 時間範圍鎖定在軟體啟動那一分鐘
+
+### 3. 找 Ghost Device
+
+```
+Device Manager → View → Show hidden devices
+```
+
+同一 VID/PID 出現多次：
+
+- Code 45：設備換過 port，舊記錄未清除
+- Code 43：驅動初始化失敗
+- Code 28：找不到驅動
+
+### 4. 追 Handle
+
+用 Process Explorer（Handle view）確認 `\Device\` 路徑是否指向 dead instance。
+
+### 5. 清除 Ghost Device
+
+選 hidden dead instance → Uninstall device → 勾選刪除驅動 → 重新插拔設備。
+
+如果有多台機器需要批次清除：
+
+```powershell
+# 需要 devcon.exe（Windows Driver Kit 附帶）
+devcon remove "@USB\VID_10C4&PID_EA80\{old_instance_id}"
+```
+
+### 6. 預防性建議（給驅動/應用程式開發者）
+
+不要假設 `SetupDiEnumDeviceInterfaces` 返回的第一個 interface 是 active 的：
+
+```cpp
+// 正確做法：枚舉所有，嘗試 open，失敗繼續
+while (SetupDiEnumDeviceInterfaces(...)) {
+    HANDLE h = CreateFile(detail->DevicePath, ...);
+    if (h != INVALID_HANDLE_VALUE) {
+        // 使用這個 handle
+        break;
+    }
+    // 繼續枚舉下一個
+}
+```
+
+---
+
+## 後日譚：DeviceDoctor
+
+這次排查結束後，我用幾天時間把上面的流程包成一個小工具 DeviceDoctor——輸入 VID/PID，自動列出所有 active 和 hidden 的 instance，標記 Code 45/43/28，建議要清除哪些。工具本身不複雜，但有了它之後，下次遇到同類問題可以把「追 ghost device」這個步驟從 15 分鐘縮到 30 秒。有時候最有用的工具不是解決新問題，而是讓已知問題不再浪費時間。
