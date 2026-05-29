@@ -1,0 +1,266 @@
+---
+title: "A Third-Party App Was Silently Holding My HID Device: A Complete Windows Device Connection Debug"
+date: 2026-05-29
+tags: ["Windows", "HID", "USB", "debugging", "PowerShell", "Sysinternals"]
+summary: "LensConnect showed Device not found on a customer machine the moment it launched, while Windows appeared completely normal. This post documents the full investigation from PnP layer down to kernel PDO handles, and how handle64 finally revealed the real culprit."
+draft: false
+---
+
+## The Symptom
+
+On a customer machine, LensConnect GUI launched and immediately displayed `Device not found`. The SN list was empty — no Lens to select at all.
+
+First instinct: the device disappeared. But Device Manager showed the Lens sitting there perfectly fine — no yellow exclamation mark, status OK.
+
+Having both of those be true at the same time is odd. It means the problem isn't that Windows can't see the device; it's that the application can't **open** it the way it needs to.
+
+---
+
+## Layer 1: Is Windows PnP Healthy?
+
+First, confirm Windows actually sees the Lens:
+
+```powershell
+Get-PnpDevice -PresentOnly |
+  Where-Object { $_.InstanceId -match 'VID_10C4|PID_8D08' } |
+  Select-Object Status, Class, FriendlyName, InstanceId |
+  Format-List
+```
+
+Result: PnP is completely healthy.
+
+```text
+IsPresent:      True
+ProblemCode:    0
+DriverInfPath:  input.inf
+DriverProvider: Microsoft
+Stack:          \Driver\HidUsb
+```
+
+The active binding is the Microsoft inbox HID driver (`input.inf`), not any vendor `oemXX.inf`.
+
+**Verdict**: PnP layer is healthy. No driver cleanup needed — there's nothing wrong to clean up.
+
+---
+
+## Layer 2: Does the App Enter HID Initialization?
+
+Using Procmon with a filter on the LensConnect process name, observing the GUI startup sequence.
+
+LensConnect loaded these DLLs:
+
+```text
+SLABHIDtoSMBus.dll
+SLABHIDDevice.dll
+hid.dll
+setupapi.dll
+cfgmgr32.dll
+devobj.dll
+```
+
+It also queried the HID device interface class root registry key:
+
+```text
+HKLM\System\CurrentControlSet\Control\DeviceClasses\{4d1e55b2-f16f-11cf-88cb-001111000030}
+```
+
+But there was no `CreateFile` to `\\?\HID#VID_10C4&PID_8D08...`, no `DeviceIoControl`, no `ReadFile` or `WriteFile`.
+
+**Verdict**: The app entered SDK initialization but never reached actual HID I/O. The failure happens earlier — during device enumeration or open.
+
+---
+
+## Layer 3: Is the Lens Still on the USB Bus?
+
+To rule out USB-layer issues, captured traffic with Wireshark + USBPcap from the moment LensConnect launched until `Device not found` appeared.
+
+USBPcap showed the Lens:
+
+```text
+VID: 10C4
+PID: 8D08
+Interface class: HID
+Interrupt IN endpoint:  0x81
+Interrupt OUT endpoint: 0x01
+```
+
+But during the entire launch-to-failure window, no HID endpoint commands appeared.
+
+**Verdict**: USB layer is normal. The Lens didn't disappear. The GUI failed before sending a single HID command.
+
+---
+
+## Layer 4: Where Exactly Does the SDK Fail?
+
+LensConnect controls the Lens through the SLABHIDtoSMBus SDK. The GUI only says `Device not found`, which tells us nothing. Wrote a diagnostic tool to call each SDK API individually and print return codes:
+
+```text
+GetNumDevices rc=0x00, numDevices=1
+[0] GetAttributes  rc=0x06, VID=0x0000, PID=0x0000, REL=0x0000
+[0] GetString PATH rc=0x00, str=[\\?\HID#VID_10C4&PID_8D08#8&[INST]&1&0000#{4d1e55b2-...}]
+[0] GetString SERIAL       rc=0x06, str=[]
+[0] GetString MANUFACTURER rc=0x06, str=[]
+[0] GetString PRODUCT      rc=0x06, str=[]
+[0] Open rc=0x01, handle=0x0
+```
+
+`GetNumDevices` succeeded — found 1 device, and obtained the HID path. But `GetAttributes`, all string queries, and `Open` all failed. `Open rc=0x01` is the actual source of the `Device not found` message.
+
+**Verdict**: The SDK finds the device but can't open it. Next question: is Windows HID API itself broken, or is something else blocking the open?
+
+---
+
+## The Turning Point: Bypassing the SDK
+
+Wrote a PowerShell script using C# P/Invoke to call the Windows HID API directly, testing the same HID path in three modes:
+
+```powershell
+# DirectHidOpenTest.ps1
+# P/Invoke: CreateFile / HidD_GetAttributes / HidD_GetSerialNumberString / etc.
+```
+
+Results:
+
+```text
+Open metadata only, shared read/write: SUCCESS
+HidD_GetAttributes: True
+VID=0x10C4, PID=0x8D08
+Serial=[XXXXXXXX]
+Manufacturer=[Computar]
+Product=[LensConnect]
+
+Open read/write, shared read/write: SUCCESS
+HidD_GetAttributes: True
+Serial=[XXXXXXXX]
+Manufacturer=[Computar]
+Product=[LensConnect]
+
+Open read/write, exclusive: FAIL
+GetLastError: 32 (ERROR_SHARING_VIOLATION)
+```
+
+Shared opens succeed, all device data readable. But **exclusive open fails with Win32 error 32 (`ERROR_SHARING_VIOLATION`)**.
+
+This is the pivot point: **the HID path isn't broken, the Lens hardware is fine — but another process holds the handle in exclusive mode, preventing the SDK's `HidSmbus_Open` from acquiring the handle it needs.**
+
+---
+
+## Finding the Handle Owner
+
+### Step 1: Search by VID/PID string
+
+The intuitive approach: dump all handles with Sysinternals `handle64` and grep for VID/PID:
+
+```powershell
+handle64.exe -a > handle_all.txt 2>&1
+
+Select-String -Path handle_all.txt `
+  -Pattern "VID_10C4","PID_8D08","HID#VID_10C4" |
+  Out-File handle_filtered.txt -Encoding UTF8
+```
+
+Result: no owner found.
+
+This doesn't mean nothing holds the handle. The reason: **kernel handles display the Physical Device Object (PDO) kernel path — something like `\Device\000000XX` — not the user-mode `\\?\HID#VID_10C4...` string**. Grepping for VID/PID strings won't find them.
+
+### Step 2: Get the PDO name
+
+Map the HID instance ID to its kernel PDO name:
+
+```powershell
+$id    = "HID\VID_10C4&PID_8D08\8&[INST]&1&0000"
+$props = Get-PnpDeviceProperty -InstanceId $id
+$pdo   = ($props | Where-Object { $_.KeyName -eq "DEVPKEY_Device_PDOName" }).Data
+# Result: \Device\00000000
+```
+
+### Step 3: Search handle64 by PDO name
+
+```powershell
+handle64.exe -a > handle_all.txt 2>&1
+
+Select-String -Path handle_all.txt -SimpleMatch "\Device\00000000" |
+  Out-File handle_pdo_hits.txt -Encoding UTF8
+```
+
+This time, a hit:
+
+```text
+darkFlash DN-D.exe  pid: [PID]  1044: File (---) \Device\00000000
+```
+
+**darkFlash DN-D.exe** is holding the Lens HID PDO handle.
+
+---
+
+## Verification
+
+Closed `darkFlash DN-D.exe`, relaunched LensConnect.
+
+Connected normally. SN list appeared. Lens is controllable.
+
+Root cause confirmed.
+
+---
+
+## The Full Causal Chain
+
+```text
+Windows enumerates Lens normally (PnP/HidUsb healthy)
+↓
+Lens HID PDO = \Device\00000000
+↓
+darkFlash DN-D.exe holds this PDO (exclusive mode)
+↓
+Windows HID shared open still succeeds
+↓
+But exclusive open fails (Win32 Error 32)
+↓
+SLABHIDtoSMBus HidSmbus_Open cannot acquire the handle
+↓
+SDK returns rc=0x01
+↓
+LensConnect GUI: Device not found, SN list empty
+↓
+After closing darkFlash DN-D.exe: LensConnect works normally
+```
+
+---
+
+## Ruled-Out Directions
+
+- Windows can't see the Lens → Ruled out (PnP present, ProblemCode=0)
+- Lens missing from USB bus → Ruled out (USBPcap confirmed HID descriptor present)
+- Wrong driver binding (oemXX.inf) → Ruled out (active binding is Microsoft input.inf)
+- Driver cleanup would help → Ruled out (no OEM driver to remove)
+- HID path itself broken → Ruled out (Direct HID shared open succeeded, all data readable)
+- LensConnect not entering SLABHID initialization → Ruled out (Procmon confirmed SDK DLL loaded)
+
+---
+
+## Recommendations
+
+**Short-term**: Close darkFlash DN-D.exe before launching LensConnect. Relaunch it after finishing lens operations.
+
+**Mid-term**: Disable darkFlash from auto-starting at boot. Check its startup sources:
+
+```powershell
+Get-CimInstance Win32_StartupCommand |
+  Where-Object { $_.Name -match 'darkFlash|DN-D' -or $_.Command -match 'darkFlash|DN-D' } |
+  Select-Object Name, Command, Location, User |
+  Format-List
+```
+
+**Long-term recommendations (for vendors)**:
+
+To the LensConnect team: When `HidSmbus_Open` fails, distinguish between "device genuinely not found" and "device exists but is exclusively locked (sharing violation)". Different errors deserve different messages.
+
+To the darkFlash team: darkFlash DN-D.exe scans and exclusively opens HID device objects that don't belong to darkFlash hardware. Consider filtering by VID/PID, manufacturer string, or HID usage page, and avoid holding handles to third-party devices for extended periods.
+
+---
+
+## Postscript: DeviceDoctor
+
+The manual steps from this investigation — PnP snapshot, HID transport probe, PDO lookup, handle64 search — were later automated into a tool called DeviceDoctor. Running the same scenario through the tool: 33 seconds from device insertion to identifying the culprit process.
+
+The tool follows an evidence-driven decision tree: each stage's result determines whether the next stage runs at all. Output includes both a markdown report (for engineers) and a plain-text summary (for on-site non-technical staff), with all raw traces preserved for later review.

@@ -1,0 +1,266 @@
+---
+title: "某個第三方軟體悄悄佔走我的 HID：一次 Windows 裝置連線失敗的完整追查"
+date: 2026-05-29
+tags: ["Windows", "HID", "USB", "debugging", "PowerShell", "Sysinternals"]
+summary: "LensConnect 在某台客戶機器上一啟動就顯示 Device not found，Windows 看起來一切正常。這篇文章記錄了從 PnP 層一路排查到 kernel PDO handle 的完整過程，以及最後如何用 Sysinternals handle64 揪出真正的佔用者。"
+draft: false
+---
+
+## 症狀
+
+某台機器上，LensConnect GUI 一啟動就跳 `Device not found`，SN list 完全空白，沒有任何 Lens 可選。
+
+第一直覺是裝置消失了。但 Device Manager 裡 Lens 好端端地坐著，沒有驚嘆號，狀態 OK。
+
+這兩件事同時為真是有點奇怪的——代表問題不在 Windows 看不看得到裝置，而在應用程式**用什麼方式**去開它。
+
+---
+
+## 第一層：Windows PnP 正不正常？
+
+先確認 Windows 是不是真的看得到 Lens：
+
+```powershell
+Get-PnpDevice -PresentOnly |
+  Where-Object { $_.InstanceId -match 'VID_10C4|PID_8D08' } |
+  Select-Object Status, Class, FriendlyName, InstanceId |
+  Format-List
+```
+
+結果：PnP 完全正常。
+
+```text
+IsPresent:      True
+ProblemCode:    0
+DriverInfPath:  input.inf
+DriverProvider: Microsoft
+Stack:          \Driver\HidUsb
+```
+
+Active binding 是 Microsoft inbox HID driver（`input.inf`），不是任何 vendor `oemXX.inf`。
+
+**判斷**：PnP 層健康，排除 driver 問題。不需要跑 `pnputil /delete-driver` 或任何 driver cleanup，因為根本沒有壞掉的 driver 可以清。
+
+---
+
+## 第二層：App 有沒有進入 HID 初始化？
+
+用 Procmon，filter 鎖 LensConnect process name，觀察 GUI 啟動流程。
+
+看到 LensConnect 有載入這些 DLL：
+
+```text
+SLABHIDtoSMBus.dll
+SLABHIDDevice.dll
+hid.dll
+setupapi.dll
+cfgmgr32.dll
+devobj.dll
+```
+
+也有查詢 HID device interface class root registry：
+
+```text
+HKLM\System\CurrentControlSet\Control\DeviceClasses\{4d1e55b2-f16f-11cf-88cb-001111000030}
+```
+
+但沒有看到任何 `CreateFile` 到 `\\?\HID#VID_10C4&PID_8D08...`，沒有 `DeviceIoControl`，沒有 `ReadFile / WriteFile`。
+
+**判斷**：App 有進入 SDK 初始化流程，但沒走到實際的 HID I/O。問題更早發生——在 enumeration / open 階段。
+
+---
+
+## 第三層：USB bus 上 Lens 還在嗎？
+
+為了確認 USB 層本身，用 Wireshark + USBPcap 在 LensConnect 啟動到 `Device not found` 這段時間抓封包。
+
+USBPcap 有看到 Lens：
+
+```text
+VID: 10C4
+PID: 8D08
+Interface class: HID
+Interrupt IN endpoint:  0x81
+Interrupt OUT endpoint: 0x01
+```
+
+但 GUI 啟動到錯誤這段期間，完全沒有任何 HID endpoint command 出現。
+
+**判斷**：USB bus 層正常，Lens 沒有消失。GUI 在發出第一個 HID command 之前就已經結束了。
+
+---
+
+## 第四層：SDK 在哪一步失敗？
+
+LensConnect 透過 SLABHIDtoSMBus SDK 操作 Lens。GUI 只顯示 `Device not found`，資訊量太少。寫一個 diagnostic tool，直接逐一呼叫 SDK API 並印出 return code：
+
+```text
+GetNumDevices rc=0x00, numDevices=1
+[0] GetAttributes  rc=0x06, VID=0x0000, PID=0x0000, REL=0x0000
+[0] GetString PATH rc=0x00, str=[\\?\HID#VID_10C4&PID_8D08#8&[INST]&1&0000#{4d1e55b2-...}]
+[0] GetString SERIAL       rc=0x06, str=[]
+[0] GetString MANUFACTURER rc=0x06, str=[]
+[0] GetString PRODUCT      rc=0x06, str=[]
+[0] Open rc=0x01, handle=0x0
+```
+
+`GetNumDevices` 成功，找到 1 個裝置，也能取得 HID path。但 `GetAttributes`、所有 string、以及 `Open` 全部失敗。`Open rc=0x01` 就是 GUI 顯示 `Device not found` 的根源。
+
+**判斷**：SDK 找到了裝置，但無法開啟它。下一步需要確認：是 Windows HID API 本身有問題，還是 SDK 的 open mode 被某個 process 擋住？
+
+---
+
+## 關鍵轉折：繞過 SDK，直接測 Windows HID API
+
+寫一支 PowerShell，用 C# P/Invoke 直接呼叫 Windows HID API，分三種模式測試同一個 HID path：
+
+```powershell
+# DirectHidOpenTest.ps1
+# 以 P/Invoke 呼叫 CreateFile / HidD_GetAttributes / HidD_GetSerialNumberString 等
+```
+
+結果：
+
+```text
+Open metadata only, shared read/write: SUCCESS
+HidD_GetAttributes: True
+VID=0x10C4, PID=0x8D08
+Serial=[XXXXXXXX]
+Manufacturer=[Computar]
+Product=[LensConnect]
+
+Open read/write, shared read/write: SUCCESS
+HidD_GetAttributes: True
+Serial=[XXXXXXXX]
+Manufacturer=[Computar]
+Product=[LensConnect]
+
+Open read/write, exclusive: FAIL
+GetLastError: 32 / 程序無法存取檔案，因為檔案正由另一個程序使用。
+```
+
+Shared open 成功，所有資料都讀得到。但 **exclusive open 失敗，Win32 error 32（`ERROR_SHARING_VIOLATION`）**。
+
+這是整個調查的轉折點：**HID path 沒壞，Lens 硬體正常，但有另一個 process 用排他模式持有了這個 handle，讓 SDK 的 `HidSmbus_Open` 無法取得它需要的 handle。**
+
+---
+
+## 找誰佔了 handle？
+
+### 第一步：用 VID/PID 字串搜
+
+直覺是用 Sysinternals `handle64` 全機 dump，grep VID/PID：
+
+```powershell
+handle64.exe -a > handle_all.txt 2>&1
+
+Select-String -Path handle_all.txt `
+  -Pattern "VID_10C4","PID_8D08","HID#VID_10C4" |
+  Out-File handle_filtered.txt -Encoding UTF8
+```
+
+結果：找不到任何 owner。
+
+這不代表沒有 process 佔用。原因是：**kernel handle 顯示的是 Physical Device Object (PDO) 的 kernel path，格式像 `\Device\000000XX`，而不是 user-mode 的 `\\?\HID#VID_10C4...` 字串**。用 VID/PID 字串搜，根本搜不到。
+
+### 第二步：取得 PDO name
+
+先把 HID instance 對應到它的 kernel PDO name：
+
+```powershell
+$id    = "HID\VID_10C4&PID_8D08\8&[INST]&1&0000"
+$props = Get-PnpDeviceProperty -InstanceId $id
+$pdo   = ($props | Where-Object { $_.KeyName -eq "DEVPKEY_Device_PDOName" }).Data
+# 結果類似：\Device\00000000
+```
+
+### 第三步：用 PDO name 搜 handle64
+
+```powershell
+handle64.exe -a > handle_all.txt 2>&1
+
+Select-String -Path handle_all.txt -SimpleMatch "\Device\00000000" |
+  Out-File handle_pdo_hits.txt -Encoding UTF8
+```
+
+這次命中了：
+
+```text
+darkFlash DN-D.exe  pid: [PID]  1044: File (---) \Device\00000000
+```
+
+**darkFlash DN-D.exe** 持有 Lens 的 HID PDO handle。
+
+---
+
+## 驗證根因
+
+關閉 `darkFlash DN-D.exe`，重新啟動 LensConnect。
+
+正常連線，SN list 出現，Lens 可以控制。
+
+根因確認。
+
+---
+
+## 完整因果鏈
+
+```text
+Windows 正常 enumerate Lens（PnP/HidUsb 正常）
+↓
+Lens HID PDO = \Device\00000000
+↓
+darkFlash DN-D.exe 持有此 PDO（排他模式）
+↓
+Windows HID shared open 仍可成功
+↓
+但 exclusive open 失敗（Win32 Error 32）
+↓
+SLABHIDtoSMBus HidSmbus_Open 無法取得所需 handle
+↓
+SDK 回傳 rc=0x01
+↓
+LensConnect GUI：Device not found，SN list 空白
+↓
+關閉 darkFlash DN-D.exe 後，LensConnect 恢復正常
+```
+
+---
+
+## 已排除的方向
+
+- Windows 看不到 Lens → 已排除（PnP present，ProblemCode=0）
+- USB bus 無 Lens → 已排除（USBPcap 有看到 HID descriptor）
+- Driver 綁錯 oemXX.inf → 已排除（active binding 是 Microsoft input.inf）
+- Driver cleanup 可解決 → 已排除（沒有可刪的 OEM driver）
+- HID path 本身壞掉 → 已排除（Direct HID shared open 成功，資料完整）
+- LensConnect 沒有進入 SLABHID 初始化 → 已排除（Procmon 確認有載入 SDK DLL）
+
+---
+
+## 處置建議
+
+**短期**：使用 LensConnect 前，先關閉 darkFlash DN-D.exe。完成操作後再重新啟動。
+
+**中期**：設定 darkFlash 不隨開機自動啟動。可用下列指令確認啟動來源：
+
+```powershell
+Get-CimInstance Win32_StartupCommand |
+  Where-Object { $_.Name -match 'darkFlash|DN-D' -or $_.Command -match 'darkFlash|DN-D' } |
+  Select-Object Name, Command, Location, User |
+  Format-List
+```
+
+**長期建議（給廠商）**：
+
+給 LensConnect 廠商：`HidSmbus_Open` 失敗時，應區分「裝置真的不存在」與「裝置存在但被排他鎖定（sharing violation）」，給出不同的錯誤訊息，方便現場快速定位。
+
+給 darkFlash 廠商：darkFlash DN-D.exe 在執行期間掃描並排他開啟了非 darkFlash 裝置的 HID object。建議加入 VID/PID / manufacturer / usage page 篩選，不要長時間持有非自家裝置的 handle。
+
+---
+
+## 後日譚：DeviceDoctor
+
+這次排查的手動流程——PnP snapshot、HID transport probe、PDO 查詢、handle64 搜尋——事後被包成一個自動化工具 DeviceDoctor。同樣的場景，工具從插入裝置到指出 culprit process，33 秒完成。
+
+工具採用 evidence-driven 決策樹：每一步的結果決定下一步要不要跑，而不是無腦全跑。報告會同時產出 markdown（技術版）與 txt（給現場非技術人員看），並保留所有原始 trace 供事後追查。
