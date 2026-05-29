@@ -251,3 +251,5 @@ Get-CimInstance Win32_StartupCommand |
 The manual steps from this investigation — PnP snapshot, HID transport probe, PDO lookup, handle64 search — were later automated into a tool called DeviceDoctor. Running the same scenario through the tool: 33 seconds from device insertion to identifying the culprit process.
 
 The tool follows an evidence-driven decision tree: each stage's result determines whether the next stage runs at all. Output includes both a markdown report (for engineers) and a plain-text summary (for on-site non-technical staff), with all raw traces preserved for later review.
+
+Source: [pursky7468/hid-device-doctor](https://github.com/pursky7468/hid-device-doctor)
