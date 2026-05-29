@@ -16,6 +16,30 @@ draft: false
 
 ---
 
+## 第零層：先找到裝置的 VID/PID
+
+在用 PowerShell 查詢之前，需要先知道要找的裝置的 VID/PID，否則 filter 根本不知道要填什麼。
+
+最乾淨的方式是 **before/after 快照比對**：拔除裝置前抓一次 PnP 清單，插入裝置後再抓一次，diff 出新增的 InstanceId，就能拿到 VID/PID：
+
+```powershell
+# 拔除裝置前
+$before = Get-PnpDevice -PresentOnly | Select-Object InstanceId
+
+# 插入裝置後
+$after = Get-PnpDevice -PresentOnly | Select-Object InstanceId
+
+# 比對新增的裝置
+Compare-Object $before $after -Property InstanceId |
+  Where-Object { $_.SideIndicator -eq '=>' }
+```
+
+另一個方式是直接在 Device Manager 查：對裝置右鍵 → Properties → Details → Hardware IDs，就能看到完整的 VID/PID 字串。
+
+這個案例的 Lens 是 `VID_10C4&PID_8D08`，取得之後才能進入下一層。
+
+---
+
 ## 第一層：Windows PnP 正不正常？
 
 先確認 Windows 是不是真的看得到 Lens：
@@ -27,17 +51,21 @@ Get-PnpDevice -PresentOnly |
   Format-List
 ```
 
-結果：PnP 完全正常。
+結果回傳了兩筆，這是正常的——一個 USB 裝置有 HID interface 時，Windows 會建立兩個 device node：
 
 ```text
-IsPresent:      True
-ProblemCode:    0
-DriverInfPath:  input.inf
-DriverProvider: Microsoft
-Stack:          \Driver\HidUsb
+Status       : OK
+Class        : HIDClass
+FriendlyName : 符合 HID 標準的廠商定義裝置
+InstanceId   : HID\VID_10C4&PID_8D08\8&[INST]&1&0000
+
+Status       : OK
+Class        : HIDClass
+FriendlyName : USB 輸入裝置
+InstanceId   : USB\VID_10C4&PID_8D08\[SERIAL]
 ```
 
-Active binding 是 Microsoft inbox HID driver（`input.inf`），不是任何 vendor `oemXX.inf`。
+兩者的關係是 parent-child：`USB\...` 是實體 USB 裝置，`HID\...` 是它上面的 HID interface，也是應用程式實際開啟的那個 node。兩者狀態都是 OK，沒有驚嘆號，沒有 ProblemCode。
 
 **判斷**：PnP 層健康，排除 driver 問題。不需要跑 `pnputil /delete-driver` 或任何 driver cleanup，因為根本沒有壞掉的 driver 可以清。
 

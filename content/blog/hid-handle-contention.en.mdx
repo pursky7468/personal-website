@@ -16,6 +16,30 @@ Having both of those be true at the same time is odd. It means the problem isn't
 
 ---
 
+## Layer 0: Find the Device VID/PID First
+
+Before querying with PowerShell, you need to know the target device's VID/PID — otherwise you have nothing to filter on.
+
+The cleanest approach is a **before/after snapshot diff**: capture the PnP device list before plugging in the device, then again after, and diff for new InstanceIds:
+
+```powershell
+# Before plugging in
+$before = Get-PnpDevice -PresentOnly | Select-Object InstanceId
+
+# After plugging in
+$after = Get-PnpDevice -PresentOnly | Select-Object InstanceId
+
+# New devices
+Compare-Object $before $after -Property InstanceId |
+  Where-Object { $_.SideIndicator -eq '=>' }
+```
+
+Alternatively, open Device Manager, right-click the device → Properties → Details → Hardware IDs to read the VID/PID directly.
+
+In this case the Lens is `VID_10C4&PID_8D08`. With that in hand, the investigation can begin.
+
+---
+
 ## Layer 1: Is Windows PnP Healthy?
 
 First, confirm Windows actually sees the Lens:
@@ -27,17 +51,21 @@ Get-PnpDevice -PresentOnly |
   Format-List
 ```
 
-Result: PnP is completely healthy.
+The query returns two entries — this is normal. When a USB device exposes a HID interface, Windows creates two device nodes:
 
 ```text
-IsPresent:      True
-ProblemCode:    0
-DriverInfPath:  input.inf
-DriverProvider: Microsoft
-Stack:          \Driver\HidUsb
+Status       : OK
+Class        : HIDClass
+FriendlyName : HID-compliant vendor-defined device
+InstanceId   : HID\VID_10C4&PID_8D08\8&[INST]&1&0000
+
+Status       : OK
+Class        : HIDClass
+FriendlyName : USB Input Device
+InstanceId   : USB\VID_10C4&PID_8D08\[SERIAL]
 ```
 
-The active binding is the Microsoft inbox HID driver (`input.inf`), not any vendor `oemXX.inf`.
+They have a parent-child relationship: `USB\...` is the physical USB device; `HID\...` is the HID interface sitting on top of it — and the node applications actually open. Both show Status OK, no error codes.
 
 **Verdict**: PnP layer is healthy. No driver cleanup needed — there's nothing wrong to clean up.
 
