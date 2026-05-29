@@ -139,7 +139,13 @@ node scripts/verify-layout.js <slug>
 # → exit code 1 on failure
 ```
 
-The script itself is the completed form of the translation layer. It translates "verify that the layout is correct" — a semantic instruction — once and for all into a fixed set of contracts, encoded directly in the script. Every subsequent execution uses the same contract with no room for interpretation, and no LLM tokens consumed.
+The script itself is the completed form of the translation layer. It translates "verify that the layout is correct" — a semantic instruction — once and for all into a fixed set of contracts, encoded directly in the script. Every subsequent execution uses the same contract, and no LLM tokens are consumed.
+
+One important detail: the script's output is screenshot files, not just a PASS/FAIL text result. PASS only confirms that a specific selector exists — it cannot substitute for visual inspection. The screenshots must be read into the main conversation and confirmed by a human eye. Text PASS is a necessary condition, not a sufficient one.
+
+This reveals what a translation layer actually does: it doesn't eliminate semantic interpretation — it mechanizes everything that can be mechanized, so that the remaining layer of semantic judgment ("does this table look visually correct?") happens at the right place, in an explicit form, rather than hiding silently inside an agent's interpretation space.
+
+There's also an execution precondition: the script must wait for deployment to complete before running, otherwise Playwright captures the previous version. After a push, you need to wait approximately 90 seconds for the deployment to go live before triggering the script. This is a contract precondition that requires explicit scheduling — it cannot be assumed to self-resolve.
 
 Using an agent for this task actually re-introduces semantic ambiguity — you're using a semantic instruction to tell an instruction-interpreting system to do something that needs no interpretation. That loop is itself the source of the problem.
 

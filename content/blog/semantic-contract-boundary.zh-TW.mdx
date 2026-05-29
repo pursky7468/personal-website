@@ -139,7 +139,13 @@ node scripts/verify-layout.js <slug>
 # → 失敗時 exit code 1
 ```
 
-Script 本身就是 translation layer 的完成形式。它把「確認排版是否正確」這個 semantic instruction，一次性地翻譯成一組固定的 contract，encode 進 code。之後每次執行都是相同的 contract，沒有詮釋空間，也不消耗 LLM token。
+Script 本身就是 translation layer 的完成形式。它把「確認排版是否正確」這個 semantic instruction，一次性地翻譯成一組固定的 contract，encode 進 code。之後每次執行都是相同的 contract，不消耗 LLM token。
+
+一個值得注意的細節：script 的輸出是截圖檔案，不只是 PASS/FAIL 文字。PASS 只能確認特定 selector 存在，無法替代視覺確認——截圖必須被讀進主對話，由人眼做最後確認。文字 PASS 是必要條件，不是充分條件。
+
+這說明了 translation layer 真正做的事：它不消滅 semantic interpretation，而是把能機械化的部分全部機械化，讓剩下那一層語意判斷（這個表格視覺上正確嗎？）在正確的地方、以明確的形式出現——而不是靜默地藏在某個 agent 的詮釋空間裡。
+
+還有一個執行前提：script 需要等 deployment 完成才能執行，否則 Playwright 截到的是舊版本。push 後需要等約 90 秒確認 deployment 上線，再觸發 script。這是 contract 的 precondition，需要明確排程，不能假設它會自動滿足。
 
 用 agent 做這件事，反而是把 semantic ambiguity 重新引入——你用一個 semantic instruction，告訴一個會詮釋指令的系統，去做一件不需要詮釋的事。這個迴圈本身就是問題的來源。
 
