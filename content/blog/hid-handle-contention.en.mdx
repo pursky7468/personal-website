@@ -143,7 +143,7 @@ This is the pivot point: **the HID path isn't broken, the Lens hardware is fine 
 The intuitive approach: dump all handles with Sysinternals `handle64` and grep for VID/PID:
 
 ```powershell
-handle64.exe -a > handle_all.txt 2>&1
+handle64.exe -a -accepteula -nobanner > handle_all.txt 2>&1
 
 Select-String -Path handle_all.txt `
   -Pattern "VID_10C4","PID_8D08","HID#VID_10C4" |
@@ -152,32 +152,34 @@ Select-String -Path handle_all.txt `
 
 Result: no owner found.
 
-This doesn't mean nothing holds the handle. The reason: **kernel handles display the Physical Device Object (PDO) kernel path — something like `\Device\000000XX` — not the user-mode `\\?\HID#VID_10C4...` string**. Grepping for VID/PID strings won't find them.
+This doesn't mean nothing holds the handle. The reason: **kernel handles display the Physical Device Object (PDO) kernel path — something like `\Device\000000bf` — not the user-mode `\\?\HID#VID_10C4...` string**. Grepping for VID/PID strings won't find them.
 
 ### Step 2: Get the PDO name
 
-Map the HID instance ID to its kernel PDO name:
+Map the HID instance ID to its kernel PDO name. Store it in `$pdo` — you'll use it directly in the next step:
 
 ```powershell
 $id    = "HID\VID_10C4&PID_8D08\8&[INST]&1&0000"
 $props = Get-PnpDeviceProperty -InstanceId $id
 $pdo   = ($props | Where-Object { $_.KeyName -eq "DEVPKEY_Device_PDOName" }).Data
-# Result: \Device\00000000
+Write-Host "PDO = $pdo"   # e.g. \Device\000000bf
 ```
 
 ### Step 3: Search handle64 by PDO name
 
-```powershell
-handle64.exe -a > handle_all.txt 2>&1
+Use `$pdo` directly — don't copy-paste the PDO string manually; the value differs on every machine:
 
-Select-String -Path handle_all.txt -SimpleMatch "\Device\00000000" |
+```powershell
+handle64.exe -a -accepteula -nobanner > handle_all.txt 2>&1
+
+Select-String -Path handle_all.txt -SimpleMatch $pdo |
   Out-File handle_pdo_hits.txt -Encoding UTF8
 ```
 
 This time, a hit:
 
 ```text
-darkFlash DN-D.exe  pid: [PID]  1044: File (---) \Device\00000000
+darkFlash DN-D.exe  pid: [PID]  1044: File (---) \Device\000000bf
 ```
 
 **darkFlash DN-D.exe** is holding the Lens HID PDO handle.
@@ -199,7 +201,7 @@ Root cause confirmed.
 ```text
 Windows enumerates Lens normally (PnP/HidUsb healthy)
 ↓
-Lens HID PDO = \Device\00000000
+Lens HID PDO = \Device\000000XX (varies per machine)
 ↓
 darkFlash DN-D.exe holds this PDO (exclusive mode)
 ↓
