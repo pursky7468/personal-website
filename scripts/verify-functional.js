@@ -39,12 +39,15 @@ const TESTS = [
         { label: 'Blog',     path: '/zh-TW/blog' },
         { label: 'About',    path: '/zh-TW/about' },
       ]
+      const origin = new URL(page.url()).origin
       for (const { label, path: expectedPath } of links) {
-        await page.goto(page.url().replace(/\/zh-TW.*/, '/zh-TW'), { waitUntil: 'networkidle' })
+        await page.goto(origin + '/zh-TW', { waitUntil: 'networkidle' })
         const link = page.locator(`nav a[href="${expectedPath}"]`).first()
         if (await link.count() === 0) throw new Error(`Nav link to "${expectedPath}" not found`)
-        await link.click()
-        await page.waitForLoadState('networkidle')
+        await Promise.all([
+          page.waitForURL(`**${expectedPath}`, { timeout: 5000 }),
+          link.click(),
+        ])
         const currentPath = new URL(page.url()).pathname
         if (!currentPath.startsWith(expectedPath)) {
           throw new Error(`"${label}" link went to "${currentPath}", expected "${expectedPath}"`)
@@ -60,9 +63,10 @@ const TESTS = [
       const switcher = page.locator('button[aria-label="Switch language"]').first()
       if (await switcher.count() === 0) throw new Error('Language switcher button not found')
 
-      await switcher.click()
-      await page.waitForLoadState('networkidle')
-
+      await Promise.all([
+        page.waitForURL(url => url.href.includes('/en'), { timeout: 5000 }),
+        switcher.click(),
+      ])
       const newUrl = page.url()
       if (!newUrl.includes('/en')) {
         throw new Error(`URL after language switch does not contain /en: ${newUrl}`)
@@ -75,9 +79,10 @@ const TESTS = [
     url: '/en',
     async run(page) {
       const switcher = page.locator('button[aria-label="Switch language"]').first()
-      await switcher.click()
-      await page.waitForLoadState('networkidle')
-
+      await Promise.all([
+        page.waitForURL(url => url.href.includes('/zh-TW'), { timeout: 5000 }),
+        switcher.click(),
+      ])
       const newUrl = page.url()
       if (!newUrl.includes('/zh-TW')) {
         throw new Error(`URL after language switch does not contain /zh-TW: ${newUrl}`)
