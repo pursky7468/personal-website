@@ -102,12 +102,12 @@ Blog 的 `CLAUDE.md` 只保留格式規範和常見問題。
 - 4 步驟的協調邏輯還在 `CLAUDE.md` 裡
 - 每個專案都得把這套流程再看一遍、再理解一遍
 
-### 第三版（作用域對齐）
+### 第三版（作用域對齊）
 
 發現：4 步驟的**協調邏輯本身跟 blog 無關**。它是一個通用的「前端發佈驗證模式」：
 
 ```markdown
-# 通用發佈驗證模式（～/.claude/rules/workflows.md）
+# 通用發佈驗證模式（~/.claude/rules/workflows.md）
 
 1. publisher 產生內容 artifact
 2. reviewer 檢查品質
@@ -164,7 +164,7 @@ project/scripts/         # 專案特定：驗證腳本、build 指令
 | 「Frontmatter 包含 date, tags, summary」 | 否 | 專案 (CLAUDE.md) |
 | 「verifyCommands 執行 rendering check」 | 否（文件專案可能檢查 sidebar） | 專案 (config.json) |
 
-## 5. 設計原則：作用域對齐（Scope Alignment）
+## 5. 設計原則：作用域對齊（Scope Alignment）
 
 這個概念其實和軟體設計的 **Single Responsibility Principle (SRP)** 一樣：
 
