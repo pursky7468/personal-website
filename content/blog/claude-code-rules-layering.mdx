@@ -1,0 +1,198 @@
+---
+title: Claude Code 規則的分層設計：從 CLAUDE.md 到 ~/.claude/rules/
+date: 2026-06-01
+tags: ["Claude Code", "AI", "workflow", "engineering"]
+summary: 理解規則歸屬層級：從專案混雜的設定到使用者層級的抽象化工作流程。
+draft: false
+---
+
+## 前言
+
+隨著 Claude Code 的使用越來越深，你會發現自己在許多地方寫規則：專案的 `CLAUDE.md`、全域的設定檔、甚至是 hook 腳本。這些規則做著不同的工作，卻常常被塞進同一個地方，造成了一個隱形的問題——**作用域錯置**。
+
+本文透過一個真實的案例（blog 發佈流程），展示如何識別規則真正應該住的層級，並建立一個可維護、可複用的規則分層架構。
+
+## 1. 問題：CLAUDE.md 越長越大
+
+當你用 Claude Code 管理多個專案時，會逐漸在 `CLAUDE.md` 裡堆積各種規則：
+
+```markdown
+# 我的編碼風格
+- 用 zh-TW 回覆我
+- 結構化、實用的說明方式
+
+# 這個專案的 blog 規則
+- 副檔名一律 .mdx
+- Frontmatter schema 是...
+- 發佈流程是 4 個步驟：publisher → reviewer → verify → screenshot
+
+# 我所有前端專案的發佈驗證
+- publisher agent 讀 config、產生 .mdx
+- reviewer agent 檢查內容品質
+- verifyCommands 依序執行...
+```
+
+乍看之下沒有問題。但隨著專案增多，你會發現同樣的流程在 blog、文件、landing page 專案裡被重複寫了三遍。想更新流程時，要改三個地方。新成員問「為什麼發佈流程長這樣」時，得不到明確答案，因為**流程邏輯和專案特定規則混在一起**。
+
+真正的問題不是「CLAUDE.md 太長」，而是**規則的歸屬層級錯了**。
+
+## 2. 發現：`~/.claude/rules/` 的分層設計
+
+Claude Code 官方文件提到 `~/.claude/rules/` 目錄。這不只是「放規則的地方」，而是一種**分層設計**：
+
+```
+~/.claude/rules/
+├── preferences.md      # 個人編碼偏好、語言、溝通風格
+└── workflows.md        # 偏好的工作流程、協調規則
+```
+
+這樣做的好處：
+- 規則有了明確的歸屬：跨專案的通用邏輯 vs 專案特定的配置
+- 新專案自動繼承使用者層級的規則，不需複製
+- 更新流程只需改一個地方
+- 規則的意圖變清楚：「這是我對所有專案的要求」 vs 「這個專案特有」
+
+但這只是檔案結構的改變。真正的設計洞察在於：**這個規則的作用域，到底是哪一層？**
+
+## 3. 真正的洞察：抽象程度決定歸屬層級
+
+與其說「分檔案」，不如問：**如果我在另一個專案用同樣的流程，這條規則還成立嗎？**
+
+用 blog 發佈流程的演進來說明：
+
+### 第一版（耦合）
+
+整個 4 步驟流程（publisher agent → reviewer agent → verifyCommands → 視覺確認）直接寫在 blog 專案的 `CLAUDE.md` 裡：
+
+```markdown
+# Blog 發佈流程
+
+1. Agent(web-content-publisher) → 寫內容、轉 .mdx、commit、push
+2. Agent(web-content-reviewer) → 審核內容品質
+3. Bash: <verifyCommands> → 執行所有驗證腳本
+4. Read 截圖 → 視覺確認
+```
+
+**問題**：
+- 流程邏輯和 blog 特定規則（frontmatter schema、標籤約定）混在一起
+- 下一個前端專案（文件、landing page）又要複製一份
+- 想改進流程要改多個地方
+
+### 第二版（分離設定）
+
+把驗證命令抽到 `blog-publish.config.json`：
+
+```json
+{
+  "deployWaitSeconds": 30,
+  "verifyCommands": [
+    "npm run verify:rendering -- $slug",
+    "npm run verify:seo -- $slug"
+  ]
+}
+```
+
+Blog 的 `CLAUDE.md` 只保留格式規範和常見問題。
+
+**進步**：
+- 專案只需維護 config 和驗證腳本
+- 規則邏輯和配置分開了
+
+**但還不夠**：
+- 4 步驟的協調邏輯還在 `CLAUDE.md` 裡
+- 每個專案都得把這套流程再看一遍、再理解一遍
+
+### 第三版（作用域對齐）
+
+發現：4 步驟的**協調邏輯本身跟 blog 無關**。它是一個通用的「前端發佈驗證模式」：
+
+```markdown
+# 通用發佈驗證模式（～/.claude/rules/workflows.md）
+
+1. publisher 產生內容 artifact
+2. reviewer 檢查品質
+3. 等待部署完成 → 讀取 config 的 deployWaitSeconds
+4. 依序執行 config 的 verifyCommands
+5. 視覺確認：有截圖輸出的 verify script 立刻 Read 截圖
+6. 合併所有結果成一份報告
+```
+
+Blog 的 `CLAUDE.md` 只留：
+
+```markdown
+# Blog 格式規範
+
+- 副檔名：.mdx
+- Frontmatter schema：title, date, tags, summary, draft
+- tags 約定：["Claude Code", "AI", "workflow", "engineering"]
+```
+
+**結論**：
+- 協調邏輯 → 使用者層級（`~/.claude/rules/workflows.md`）
+- 格式規範 + 專案特定設定 → 專案層級（`project/CLAUDE.md` + `blog-publish.config.json`）
+
+每層只包含**真正屬於那個作用域**的內容。
+
+## 4. 最終分層結構
+
+```
+~/.claude/rules/
+├── preferences.md       # 語言（zh-TW）、coding style、溝通風格
+└── workflows.md         # 發佈驗證流程、agent 協調規則、其他通用工作流
+
+project/CLAUDE.md        # 專案特定：格式規範、frontmatter schema、常見問題
+project/blog-publish.config.json  # 專案特定：verifyCommands、deploy 設定
+project/scripts/         # 專案特定：驗證腳本、build 指令
+```
+
+### 判斷規則應該放在哪一層
+
+問自己這個問題：
+
+> **如果我在另一個前端專案（文件、landing page、產品demo）用同樣的流程，這條規則還成立嗎？**
+
+- **成立** → 使用者層級（`~/.claude/rules/`）
+- **不成立，或有細節需要調整** → 專案層級（`CLAUDE.md` / config）
+
+實際案例：
+
+| 規則 | 成立嗎？ | 應放層級 |
+|------|--------|--------|
+| 「用 zh-TW 回覆」 | 是 | 使用者 (preferences.md) |
+| 「4 步驟發佈驗證流程」 | 是 | 使用者 (workflows.md) |
+| 「Blog 副檔名 .mdx」 | 否 | 專案 (CLAUDE.md) |
+| 「Frontmatter 包含 date, tags, summary」 | 否 | 專案 (CLAUDE.md) |
+| 「verifyCommands 執行 rendering check」 | 否（文件專案可能檢查 sidebar） | 專案 (config.json) |
+
+## 5. 設計原則：作用域對齐（Scope Alignment）
+
+這個概念其實和軟體設計的 **Single Responsibility Principle (SRP)** 一樣：
+
+> **每一層只包含真正屬於那個作用域的規則。**
+
+混在一起不是說規則本身有問題，而是：
+
+1. **當你把一個專案特定的流程重構成通用模式之後**，如果沒有同步把規則往上移
+2. 下一個專案又會複製一份
+3. 想更新流程要改多個地方
+4. 規則的意圖變模糊
+
+**重構不只是抽 code，也要抽規則。**
+
+同樣的邏輯套用到其他工作流：
+
+- **CI/CD 驗證流程** → 用 GitHub Actions / Vercel 時的協調邏輯，可能是使用者層級（`workflows.md`）
+- **Code review 規則** → 「PR 要過 linter」是使用者偏好；「PR 標題格式」是專案規則
+- **開發環境設定** → 「用 pnpm」是使用者偏好；「這個專案用 Node 18」是專案規則
+
+## 結語
+
+規則分層不是為了分類而分類，而是為了**讓每一層的規則只關心它應該關心的事**。當你發現同樣的流程在多個專案裡被重複時，就是上移的信號。
+
+這樣做的回報是：
+- 新專案自動繼承成熟的工作流程
+- 流程更新只需改一個地方
+- 規則的意圖清晰：使用者偏好 vs 專案特定
+- 團隊新成員更容易理解「為什麼要這樣做」
+
+下一步，可以考慮：記錄你的通用工作流程到 `~/.claude/rules/workflows.md`，然後在每個新專案裡只寫專案特定的規則。
