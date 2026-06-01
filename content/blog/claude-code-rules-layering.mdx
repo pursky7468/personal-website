@@ -185,6 +185,45 @@ project/scripts/         # 專案特定：驗證腳本、build 指令
 - **Code review 規則** → 「PR 要過 linter」是使用者偏好；「PR 標題格式」是專案規則
 - **開發環境設定** → 「用 pnpm」是使用者偏好；「這個專案用 Node 18」是專案規則
 
+## 進一步：讓強制層也遵循作用域
+
+規則有了作用域，但規則本身是「建議」而非「強制」——Claude 可能遵守，也可能因為 context 過長而忽略。真正可靠的工作流還需要一層**強制執行**：hook。
+
+Hook 也有同樣的作用域問題。以「push 後提醒 Claude 呼叫 ScheduleWakeup」這個行為為例：
+
+- **通用邏輯**：偵測到 push → 提醒 ScheduleWakeup
+- **專案特定邏輯**：這個專案要偵測 `content/blog/*.mdx` 才觸發
+
+如果把整個 hook 腳本塞進 `~/.claude/settings.json`，就回到了作用域錯置的老問題。
+
+**Dispatcher 模式**：
+
+```
+~/.claude/settings.json           → PostToolUse 跑 dispatcher.js
+~/.claude/hooks/dispatcher.js     → 找 git root 的 .claude/hooks/post-push.js，有就執行
+project/.claude/hooks/post-push.js → 專案特定的偵測邏輯
+```
+
+Dispatcher 本身非常薄：
+
+```js
+const gitRoot = findGitRoot(process.cwd())
+const hookPath = path.join(gitRoot, '.claude', 'hooks', 'post-push.js')
+if (fs.existsSync(hookPath)) {
+  spawnSync('node', [hookPath], { input, stdio: ['pipe', 'inherit', 'inherit'] })
+}
+```
+
+它不知道任何專案細節，只負責「這個專案有定義 hook 就執行它」。偵測邏輯、觸發條件都在 project hook 裡，和 dispatcher 完全解耦。
+
+**結果**：user-level 的 rules 和 dispatcher 一次設定，新專案只需要：
+
+1. `.claude/hooks/post-push.js`（觸發邏輯）
+2. `publish.config.json`（verify 設定）
+3. verify scripts
+
+這就是作用域對齊在整個工具鏈上的完整落地——**指令層和強制層都各住在正確的作用域**。
+
 ## 結語
 
 規則分層不是為了分類而分類，而是為了**讓每一層的規則只關心它應該關心的事**。當你發現同樣的流程在多個專案裡被重複時，就是上移的信號。
