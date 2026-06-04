@@ -2,7 +2,7 @@
 
 ## Agents
 
-Blog 工作流遵循 `~/.claude/rules/workflows.md` 的 4 步驟標準流程。
+Blog 工作流遵循 `~/.claude/rules/frontend-publish.md` 的 4 步驟標準流程。
 
 - Publisher: `subagent_type: web-content-publisher`
 - Reviewer: `subagent_type: web-content-reviewer`
@@ -26,6 +26,13 @@ summary: ""   # 一句話，≤160 chars
 draft: false
 ---
 ```
+
+## Reviewer 必查項目
+
+除格式外，reviewer **必須**檢查以下內容，任何一項 FAIL 就整體 FAIL：
+
+- **素材可溯性**：所有第一人稱經驗描述（「我發現…」「有一次…」「實踐後…」）必須能對應到 publisher 收到的素材。無法對應的一律視為虛構，標為 FAIL。
+- **無捏造事實**：不可有未發生的使用經驗、未存在的測試結果、未實際觀察到的數據。
 
 ## 版面驗證重點
 
