@@ -1,0 +1,66 @@
+---
+title: LINE AI Dialogue
+description: Remote control your PC via LINE messages. Execute Claude CLI, Agy CLI, git, and PowerShell commands with async execution and real-time logging.
+date: 2026-06-05
+tags: [Node.js, LINE Messaging API, Cloudflare Tunnel, node-pty, Claude CLI]
+github: https://github.com/pursky7468/line-ai-dialogue
+featured: false
+draft: false
+---
+
+## What it does
+
+- Send commands via LINE messages to execute on your local machine
+- `/claude <prompt>` calls Claude CLI
+- `/agy <prompt>` calls Agy CLI (Gemini)
+- `/run <command>` executes PowerShell commands
+- `/git <command>` executes git commands
+- Async mode: immediate reply with "executing...", then push results after completion
+- Real-time log monitoring via `watch-log.bat`
+
+## Architecture
+
+```
+LINE ──→ Cloudflare Tunnel ──→ localhost:3000 (webhook server)
+                                    │
+                     ┌──────────────┼───────────────┐
+                     ↓              ↓               ↓
+               claude -p         agy -p       git / PowerShell
+              (node-pty)       (node-pty)      (child_process)
+```
+
+## Key Technical Decisions
+
+### node-pty for claude / agy CLI
+
+Claude and Agy use Windows Console API (`WriteConsole()`) to output their results. Standard pipe redirection cannot capture this output. Solution: use node-pty to allocate a virtual PTY and read from the stream (detailed in `decisions/`). `child_process.spawn` is sufficient for git and PowerShell commands.
+
+### Async execution model for LINE's 60s limit
+
+LINE webhooks must respond within 60 seconds. Long-running commands (claude/agy) would time out. Instead:
+1. Immediately reply with "executing..." via webhook `replyToken`
+2. Execute the command in the background
+3. Push the result to the user via LINE's `Push` API when done
+
+This keeps the user informed and avoids HTTP timeout errors.
+
+### Cloudflare Tunnel for local-to-LINE routing
+
+Cloudflare Tunnel exposes localhost:3000 to the internet without port forwarding. Fast setup with `--url`, though the URL changes on restart. Long-term improvement: migrate to Named Tunnel for a fixed URL.
+
+### UID whitelist security
+
+All commands run locally with full OS access. Only allow specific LINE User IDs via `ALLOWED_USER_IDS` env var (comma-separated). Unauthorized users are silently ignored.
+
+## What I learned
+
+- **Windows process termination requires `taskkill /F /T`** to kill the entire process tree, not just the parent
+- **node-pty binary distribution**: Pre-compiled Windows binaries are included; no build tools needed
+- **Async patterns in webhooks**: The `replyToken` → `Push` pattern is standard for long-running operations
+- **CLI tool output channels matter**: Not all tools respect stdout/stderr equally; `WriteConsole()` is invisible to pipes
+
+## Next Steps
+
+- [ ] Migrate to Cloudflare Named Tunnel for fixed webhook URL
+- [ ] Add `/cancel` command to forcefully terminate running processes
+- [ ] Full end-to-end testing from LINE for claude/agy commands
