@@ -44,31 +44,33 @@ function resolveCmd(name: string): { cmd: string; wrap: boolean } {
 
 ---
 
-## 坑 2：agy 用 WriteConsole() 輸出，pipe 捕捉不到
+## 坑 2：claude 和 agy 都用 WriteConsole() 輸出，pipe 捕捉不到
 
-agy 是 TUI 應用，輸出走 Windows Console API（WriteConsoleW），不走 file descriptor。這類工具在偵測到 stdout 不是真正的 TTY 時，會繞過 fd 1 直接寫 Console Screen Buffer，導致 `child_process.spawn` 的 `stdio: 'pipe'` 捕捉到 0 bytes。
+claude 和 agy 都是 TUI 應用，輸出走 Windows Console API（WriteConsoleW），不走 file descriptor。這類工具偵測到 stdout 不是真正的 TTY 時，會繞過 fd 1 直接寫 Console Screen Buffer，導致 `child_process.spawn` 的 `stdio: 'pipe'` 捕捉到 0 bytes。`agy -p` 和 `claude -p` 透過 spawn 執行時，stdout/stderr 完全空白，程式靜默結束。
 
-實測：`spawn('agy.exe', ['--print', 'hi'], { stdio: ['ignore', 'pipe', 'pipe'] })` → `stdout bytes: 0`。
-
-注意：**claude 不在此列**。claude 的 stdout pipe 正常工作（實測捕捉到輸出），但程式碼仍選擇用 `node-pty`，原因是 `--output-format stream-json` 的 JSON 輸出在窄終端會換行斷行，用 PTY 並設 `cols: 32000` 可以確保不換行、JSON 結構完整。
-
-解法（agy 必須用 PTY；claude 用 PTY 是為了 stream-json 輸出穩定）：
+解法：用 `node-pty` 建立 ConPTY（Windows 虛擬終端機），讓工具以為自己在真實終端機裡執行。ConPTY 攔截 WriteConsole() 輸出後透過 pipe 傳回 Node.js：
 
 ```ts
-import * as pty from 'node-pty';
-
-const proc = pty.spawn(cmd, args, {
+// agy：cols 設一般寬度即可
+const agySess = pty.spawn(cmd, args, {
   name: 'xterm-color',
-  cols: 220,   // agy 用；claude 用 cols: 32000 防止 JSON 換行
+  cols: 220,
   rows: 50,
   cwd: WORK_DIR,
   env: process.env as Record<string, string>,
 });
 
-proc.onData((data) => { output += data; });
+// claude：cols 設超寬，防止 --output-format stream-json 的 JSON 被終端換行截斷
+const claudeSess = pty.spawn(cmd, args, {
+  name: 'xterm-color',
+  cols: 32000,
+  rows: 50,
+  cwd: WORK_DIR,
+  env: process.env as Record<string, string>,
+});
 ```
 
-教訓：懷疑 CLI 走 Console API 時，先測 `<tool> > test.txt`；0 bytes 才需要 PTY。claude 是例外——pipe 可用，但 stream-json 模式下 PTY 的 wide cols 有額外價值。
+教訓：先測 `claude -p "hi" > test.txt`；0 bytes 就是走 Console API，需要 PTY。claude 用 `cols: 32000` 是為了確保 stream-json 模式的長 JSON 行不被終端強制換行。
 
 ---
 
@@ -190,11 +192,11 @@ await client.pushMessage({ to: userId, messages: [{ type: 'text', text: result }
 
 ---
 
-## 坑 9：Windows Code Page 設定導致中文亂碼
+## 坑 9：Windows 預設 Code Page 導致中文亂碼
 
-Windows Console 預設 Code Page 在繁體中文安裝下是 CP950（Big5）；但現代 Win11 若在「區域設定」裡勾選了 Beta: 使用 UTF-8，`chcp` 會回報 65001，此時這個坑不觸發。不確定當下環境時，主動切換 encoding 是安全的防禦性措施。
+繁體中文 Windows 預設 Code Page 是 CP950（Big5）。Win11 有 Beta 選項「使用 Unicode UTF-8 提供全球語言支援」，但這需要手動到「區域設定 → 系統管理員選項 → 變更系統地區設定」勾選，不是預設開啟；未設定的環境 `chcp` 回報的就是 CP950。
 
-PowerShell 本身的輸出 encoding 和 Console Code Page 是分開的設定，即使 Console 已是 UTF-8，PowerShell pipe 仍可能走 UTF-16 LE，需要另外指定。
+另一個獨立問題：PowerShell 本身的輸出 encoding 和 Console Code Page 是分開的設定，即使 Console 是 UTF-8，PowerShell pipe 仍可能走 UTF-16 LE，需要另外指定。
 
 解法：shell 指令執行時強制切換 Console encoding 為 UTF-8（Code Page 65001）：
 
@@ -240,7 +242,7 @@ where claude → resolveCmd() → 是否 .cmd
   ↓ YES
 cmd.exe /c claude.cmd -p "<safePrompt>" --output-format stream-json --verbose
   ↓
-node-pty PTY spawn（prebuilt，通常免 build tools）
+node-pty PTY spawn（prebuilt binary，免 build tools）
   ↓
 onData → 累積 raw output（含 ANSI）
   + PID poller 每秒確認 process 存活
@@ -252,4 +254,4 @@ stripAnsi → parse JSON stream → 取 ev.type === 'result'
 Push Message API → 推結果給 userId
 ```
 
-這個流程的複雜度，主要來自 agy 的 Console API 輸出（要 PTY）、ConPTY 的 EOF 不穩定性（要 PID poller）、以及 cmd.exe 當 bridge 帶來的 newline 地雷。claude 本身的 stdout pipe 是正常的，PTY 的選用反而是為了 `--output-format stream-json` 的寬度穩定性，而非因為 Console API 限制。
+這個流程的複雜度，完全來自「claude 和 agy 都不是普通的 CLI 工具」這個事實。兩者都假設自己跑在 terminal 裡，輸出走 Console API；ConPTY 的 EOF 不穩定性要 PID poller 補救；cmd.exe 當 bridge 帶來 newline 地雷。每一層都有自己的坑。
