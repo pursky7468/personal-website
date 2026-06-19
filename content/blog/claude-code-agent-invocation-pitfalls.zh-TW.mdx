@@ -1,0 +1,162 @@
+---
+title: "Claude Code Agent 調用踩坑紀錄：七個子 Agent 協作的常見誤區"
+date: 2026-06-19
+tags: ["Claude Code", "AI", "Agent", "workflow", "automation"]
+summary: "子 agent 是冷啟動，背景知識要自己帶；background/foreground 選錯會卡死；skill 只在主對話層有效；publisher-reviewer pipeline 缺 ScheduleWakeup 就失效；verifyCommands 必須全跑；背景任務會因權限卡住。七個坑，七個教訓。"
+draft: false
+---
+
+在 Claude Code 中用 Agent tool 派發子 agent，聽起來簡單：主對話說一句話，子 agent 自己去做。現實中卻充滿盲點。這些踩坑都來自實際的 publish 工作流。
+
+## 坑 1：子 agent 沒有父對話的記憶
+
+最直覺的誤解：子 agent 知道你在主對話裡說過什麼。
+
+實際上：每個 spawn 出來的子 agent 都是**冷啟動**，沒有任何前文 context。你在主對話裡做了幾個小時的設計討論，決定了架構方向，對子 agent 來說全都不存在。
+
+**後果**
+
+Prompt 不夠完整的子 agent 會重新推導你已經決定的事，或做出和主對話相反的決策。
+
+**教訓**
+
+給子 agent 的 prompt 必須 self-contained。背景要寫進去，不能假設它知道前文。背景很長的時候，整理成 context 文件傳進去，而不是貼完整對話紀錄。
+
+---
+
+## 坑 2：Background vs Foreground 選錯方向
+
+Agent tool 有兩種執行模式：
+- **Foreground**（預設）：主對話等子 agent 完成才繼續
+- **Background**：子 agent 執行中，主對話繼續做其他事
+
+| 情境 | 錯誤選擇 | 後果 |
+|---|---|---|
+| 需要結果才能繼續 | 選了 Background | 主對話後續步驟需要 research 結果 → 拿不到 → 錯誤或重做 |
+| 結果不需要立即 | 選了 Foreground | 主對話卡在等 publish 完成，整段等待時間什麼都做不了 |
+
+**判斷方法**
+
+「主對話需要這個 agent 的結果才能繼續嗎？」
+- YES → Foreground
+- NO → Background
+
+---
+
+## 坑 3：Agent 結果不會自動顯示給使用者
+
+子 agent 完成後，結果是 tool output，會進入主 Claude 的 context，但**不會直接顯示給使用者**。使用者看到的，是主 Claude 讀取結果後選擇說的話。
+
+**常見問題**
+
+1. 主 Claude 摘要太簡略。子 agent 回傳了詳細 review report，主 Claude 只說「reviewer 說沒問題」，使用者沒看到細節。
+2. 主 Claude 信任子 agent 的自我描述。子 agent 說「我已完成部署」，主 Claude 就轉述，沒有驗證。
+
+**教訓**
+
+**Trust but verify.** 對重要的子 agent 輸出，主 Claude 應該引用關鍵內容，不是只說「agent 說 OK」。子 agent 描述的是它 intended 要做的事，不代表它真的做成了。
+
+---
+
+## 坑 4：Skill 在子 agent 中無法調用
+
+在主對話習慣用的 `/agy-review`、`/code-review` 等 skill，在子 agent 環境裡無法觸發。**Skill 是主對話層級的功能，子 agent 只有工具（tools），沒有 skill 調用機制。**
+
+**後果**
+
+在 publisher agent prompt 裡寫「完成後跑 /agy-review」，沒有任何效果。沒有錯誤提示，skill 就是靜默跳過。
+
+**教訓**
+
+Skill 調用必須在主 Claude 層執行。正確的工作流順序：
+
+1. 主 Claude 派 publisher → 等 publisher 完成
+2. 主 Claude 自己調用 `/agy-review`
+3. 如有修改，再派 publisher 做最終調整
+
+---
+
+## 坑 5：Publisher/Reviewer pipeline 的 ScheduleWakeup 不可少
+
+Publisher push 到 Vercel 後，部署需要時間（通常 90 秒左右）。自然的反應是：push 完就問使用者「要現在驗證嗎？」
+
+**這是錯的。**
+
+驗證應該**自動排程**，不應該問使用者何時執行。
+
+**正確做法**
+
+push 完立即呼叫 `ScheduleWakeup`，帶 `deployWaitSeconds` 從 config 讀出來的秒數。ScheduleWakeup 會在對話 context 保留的情況下，時間到了自動醒來繼續執行驗證。
+
+**為什麼不能用 CronCreate**
+
+如果用 `CronCreate` 而非 `ScheduleWakeup`，context 不會保留，醒來的 agent 不知道它在幹嘛，無法合併 publisher/reviewer 的結果。
+
+---
+
+## 坑 6：verifyCommands 必須全跑，不可提早停止
+
+`blog-publish.config.json` 裡的 `verifyCommands` 是陣列，通常有 2-3 個。
+
+常見錯誤：第一個 command 通過就認為驗證完成，跳過後面的。
+
+**為什麼不行**
+
+每個 command 驗證的是不同層面（rendering、functional、SEO 等），第一個通過不代表其他層面沒問題。
+
+**另一個陷阱**
+
+有截圖輸出的 command 必須立刻 `Read` 截圖做視覺確認。**文字 PASS 不等於視覺正確。**
+
+字符集錯誤、table render 成原始 `|` 字元、code block 無高亮——這些文字 log 看不出來。
+
+---
+
+## 坑 7：Background 任務因權限審批而靜默卡死
+
+直覺的誤解：把任務丟到 Background 執行，它就會自己默默地把事情做完。
+
+實際上：如果子 Agent 執行的動作觸發了系統的安全機制（例如需要寫入檔案、執行未授權的 CLI），系統會跳出 **Permission Prompt** 要求使用者同意。因為任務在 Background 執行，主畫面上可能不會有明顯提示，Background Agent 會**無限期卡在等待授權的狀態**（假死），直到超時報錯。
+
+**教訓**
+
+在派發 Background Agent 之前，確保執行環境的權限已事先在 `settings.json` 裡放行。或改用 Foreground Agent，讓 permission prompt 能正常顯示給使用者回應。
+
+---
+
+## 分工模式與職責邊界
+
+| 角色 | 職責 | 不做的事 |
+|---|---|---|
+| 主 Claude | 決策、skill 調用、驗證結果整合 | 格式化、發布細節 |
+| Publisher | 格式化 + commit + push | 驗證、審核 |
+| Reviewer | 內容品質審核 | 發布、部署 |
+| Verifier | 部署後渲染驗證 | 內容判斷 |
+
+**每個角色只做一件事。** Prompt 裡要明確說不做哪些事。職責跨越會讓整個 pipeline 混亂——主 Claude 試圖驗證，publisher 試圖審核，誰都沒做好。
+
+---
+
+## 預防檢查清單
+
+派發 agent 前：
+
+- [ ] Prompt 是否 self-contained？子 agent 能獨立理解背景嗎？
+- [ ] 選對 foreground/background 了嗎？
+- [ ] 會不會有 permission prompt 卡住？已在 settings.json 放行權限了嗎？
+- [ ] 有沒有在 agent prompt 裡寫 skill 調用？改成主對話層來做。
+- [ ] 如果是 publisher-reviewer pipeline，有沒有 ScheduleWakeup？
+
+結果驗證時：
+
+- [ ] 引用了 agent 的關鍵輸出嗎？還是只說「agent 說 OK」？
+- [ ] verifyCommands 全跑了嗎？第一個通過就停止是常見錯誤。
+- [ ] 有截圖的 command，讀了截圖做視覺確認嗎？
+
+---
+
+## 後記
+
+Agent tool 的強大來自於職責分離——主對話負責決策，子 agent 專注執行。七個坑裡，最重要的是前三個：冷啟動、模式選擇、結果驗證。這三個掌握好，後面的坑自然會被回避。
+
+剩下的四個坑（skill、ScheduleWakeup、verifyCommands、權限）都是系統層的細節。但細節決定生死——一次看似完成的發佈，實際上卡在某個無聲的地方，通常就是卡在這裡。
