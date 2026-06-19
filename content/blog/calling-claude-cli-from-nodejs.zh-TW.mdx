@@ -1,0 +1,248 @@
+---
+title: "從 Node.js 呼叫 claude / agy CLI 的十個坑"
+date: 2026-06-19
+tags: ["Claude Code", "agy", "Node.js", "Windows", "PTY", "LINE Bot"]
+summary: 整合 claude/agy CLI 到 Node.js 背景工作的踩坑紀錄：從 .cmd 執行到 PTY 模擬、ANSI 過濾、ConPTY EOF 問題、encoding 轉換與 LINE webhook timeout 的完整解決方案。
+draft: false
+---
+
+目標是讓 LINE Bot 收到訊息後，在背景執行 claude 或 agy CLI，然後把結果推回去。聽起來就是個 `child_process.spawn`，沒什麼難度。
+
+實際上踩了十個坑。
+
+---
+
+## 坑 1：claude 不是 .exe，而是 .cmd
+
+第一個假設錯誤：`spawn('claude', ['-p', prompt])` 應該可以運作。
+
+Windows 上透過 npm 全域安裝的 CLI 工具，binary 通常是 .cmd 檔（Windows batch file），不是 .exe。Node.js 的 `child_process.spawn` 在非 shell 模式下無法直接執行 .cmd 檔。
+
+結果：spawn 拋出 ENOENT，或什麼都沒發生。
+
+另一個地雷：`execSync('where claude')` 在找不到該指令時會直接 throw，沒有 try/catch 的話整個 server crash。
+
+解法：
+
+```ts
+function resolveCmd(name: string): { cmd: string; wrap: boolean } {
+  try {
+    const lines = execSync(`where ${name}`, { encoding: 'utf8' })
+      .trim().split('\n').map(l => l.trim());
+    const cmdPath = lines.find(l => l.toLowerCase().endsWith('.cmd'));
+    const exePath = lines.find(l => l.toLowerCase().endsWith('.exe'));
+    if (cmdPath) return { cmd: cmdPath, wrap: true };   // .cmd → 需要 cmd.exe /c
+    if (exePath) return { cmd: exePath, wrap: false };  // .exe → 直接 spawn
+    return { cmd: lines[0], wrap: true };
+  } catch {
+    return { cmd: name, wrap: true }; // 找不到時的 fallback
+  }
+}
+```
+
+教訓：整合前先 `where <name>` 確認 binary 形式，不要假設可以直接 spawn。`where` 找不到時記得處理 throw。
+
+---
+
+## 坑 2：claude 和 agy 用 WriteConsole() 輸出，pipe 捕捉不到
+
+實際上，claude 和 agy 都是 TUI 應用，輸出走 Windows Console API（WriteConsole()），不走 file descriptor。許多現代 CLI 工具在偵測到 stdout 不是真正的 TTY 時，會繞過 fd 1，直接呼叫 WriteConsoleW 向 Console Screen Buffer 寫入，導致 `child_process.spawn` 的 `stdio: 'pipe'` 捕捉到 0 bytes。
+
+結果：pipe 捕捉到的 stdout 是 0 bytes。Process 執行完成，輸出消失在虛空。
+
+解法：改用 `node-pty` 模擬 PTY。claude 和 agy 偵測到 TTY 環境後，才會走正常的輸出路徑：
+
+```ts
+import * as pty from 'node-pty';
+
+const proc = pty.spawn(cmd, args, {
+  name: 'xterm-color',
+  cols: 220,
+  rows: 50,
+  cwd: WORK_DIR,
+  env: process.env as Record<string, string>,
+});
+
+proc.onData((data) => { output += data; });
+```
+
+教訓：先測試 `claude -p "hi" > test.txt`，若 test.txt 是 0 bytes，就是走 Console API，需要 PTY。
+
+---
+
+## 坑 3：PTY 輸出含 ANSI escape sequences
+
+用了 PTY 之後，捕捉到輸出了，但輸出夾雜顏色碼和游標控制碼：`\x1b[?25h`、`\x1b[2J` 等等。直接推回 LINE，使用者看到的是亂碼。
+
+解法：
+
+```ts
+const ANSI_RE = /\x1b\[[\x20-\x3F]*[\x40-\x7E]|\x1b\].*?\x07|\x1b[()][AB012]|\x1b[ABCDHIJMNORSTYZ\\^_]|\r/g;
+
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, '').trim();
+}
+```
+
+教訓：PTY 輸出是 raw terminal stream，使用前必須 strip。
+
+---
+
+## 坑 4：ConPTY 不會可靠地送 EOF
+
+PTY 建立了，ANSI 也過濾了，但偶爾 `onExit` 沒有觸發——process 已經結束，PTY 的 master side 卻沒收到 EOF。這是 Windows ConPTY 的已知行為。
+
+結果：`runWithPty()` 永久卡住，等待一個不會來的 `onExit`。
+
+解法：加 PID poller，每秒確認 process 是否存在：
+
+```ts
+const pidPoller = setInterval(() => {
+  try {
+    process.kill(pid, 0); // throws ESRCH when process no longer exists
+  } catch {
+    proc.kill(); // 強制觸發 PTY cleanup → onExit
+  }
+}, 1000);
+```
+
+教訓：在 Windows 上靠 PTY 的 `onExit` 作為唯一退出信號是不穩定的，需要額外的 liveness check。
+
+---
+
+## 坑 5：kill PTY 後 conpty_console_list_agent 印 crash stack trace
+
+timeout 到了 kill PTY，server stderr 噴出來自 `conpty_console_list_agent` 的 crash stack trace。
+
+原因：node-pty 在 kill 一個 child 已退出的 PTY 時，ConPTY 內部會 spawn `conpty_console_list_agent` 枚舉 console process，但 `AttachConsole()` 失敗，crash 印到 server stderr。本身不影響功能，但污染 log。
+
+解法：patch `child_process.fork`，讓 conpty agent 的 stdio 走 silent pipe：
+
+```ts
+(function patchForkForConptyAgent() {
+  const cp = require('child_process');
+  const orig = cp.fork;
+  cp.fork = (modulePath: string, args?: string[], opts?: object) => {
+    const silent = typeof modulePath === 'string' && modulePath.includes('conpty_console_list_agent');
+    return orig(modulePath, args, silent ? { ...opts, silent: true } : opts);
+  };
+}());
+```
+
+教訓：遇到奇怪的 crash log 先查是不是從 `conpty_console_list_agent` 來的。
+
+---
+
+## 坑 6：prompt 有換行符 → cmd.exe /c 把它當指令分隔符
+
+使用者在 LINE 傳了多行訊息。`cmd.exe` 把 `\n` 解讀成指令分隔符，把 prompt 切成多條指令執行。
+
+結果：claude 只收到第一行，後面的行被 cmd 當成獨立指令執行。
+
+解法：`const safePrompt = prompt.replace(/\r?\n/g, ' ');`
+
+教訓：經過 `cmd.exe /c` 的字串，換行符必須先替換。超長 prompt（接近 8191 字元限制）另外考慮改用 stdin 傳入。
+
+---
+
+## 坑 7：agy 的 "I'll..." 行夾在回應前面
+
+呼叫 agy 做某些任務時，PTY 捕捉到的輸出頭幾行是 planning 聲明（"I'll check..."、"I will read..."），不是最終回應。直接推到 LINE 使用者看到一大段工具執行紀錄。
+
+解法：找到最後一個 planning 聲明行，截掉它和之前的所有內容：
+
+```ts
+function filterAgyToolCalls(output: string): string {
+  const lines = output.split('\n');
+  let lastToolCallIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^I(?:'ll| will) /i.test(lines[i].trim())) lastToolCallIdx = i;
+  }
+  if (lastToolCallIdx === -1) return output;
+  const core = lines.slice(lastToolCallIdx + 1).join('\n').trim();
+  return core || output;
+}
+```
+
+教訓：agy 在 agentic 模式下的 PTY 輸出包含 planning 聲明，如果只要最終回應需要過濾。
+
+---
+
+## 坑 8：LINE webhook 60s timeout
+
+LINE Messaging API 規定 webhook server 必須在 60 秒內回傳 200 OK。claude 實測有到 120s，同步模式幾乎必定 timeout。
+
+解法：非同步模式。收到 webhook 後立刻回 200，用 replyToken 送「執行中...」；claude 完成後用 Push Message API 推結果（Push API 無 60s 限制）：
+
+```ts
+res.sendStatus(200);
+await client.replyMessage({
+  replyToken: event.replyToken,
+  messages: [{ type: 'text', text: '✅ 指令已受理，執行中...' }],
+});
+const result = await runClaude(prompt);
+await client.pushMessage({ to: userId, messages: [{ type: 'text', text: result }] });
+```
+
+教訓：replyToken 一次性有時效，立刻消耗；userId 保存供 Push API 使用。
+
+---
+
+## 坑 9：Windows 預設 Code Page 導致中文亂碼
+
+在繁體中文 Windows（預設 CP950）下，PTY 捕捉到的中文輸出變成亂碼。Windows Console 預設 Code Page 是 CP950（Big5），直接當 UTF-8 處理就亂掉。
+
+解法：shell 指令執行時強制切換 Console encoding 為 UTF-8（Code Page 65001）：
+
+```ts
+export function runShell(command: string): Promise<string> {
+  const psCmd = `$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
+  return runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], RUN_TIMEOUT, { tool: '指令', mergeStderr: true, shell: false });
+}
+```
+
+教訓：Windows 上的 encoding 問題不會有錯誤訊息，只會默默亂碼。所有 shell 執行路徑都要確認 encoding 設定。
+
+---
+
+## 坑 10：node-pty 需要 native build tools
+
+`npm install node-pty` 在 Windows 報錯 `node-gyp rebuild failed`，提示缺少 C++ 編譯環境或 Python。
+
+node-pty 包含原生 C++ 模組，Windows 需要編譯環境：
+
+```
+winget install Microsoft.VisualStudio.2022.BuildTools
+```
+
+教訓：node-pty 的 README 沒有把這個前置需求放在最顯眼的位置。Windows 用戶在 npm install 前需要確認 build tools 已安裝。
+
+---
+
+## 整體架構
+
+把上面十個坑的解法整合起來，最終的執行路徑長這樣：
+
+```
+收到 LINE webhook
+  → 立刻 res.sendStatus(200)
+  → replyToken 送「執行中...」
+  → 背景執行：
+
+where claude → resolveCmd() → 是否 .cmd
+  ↓ YES
+cmd.exe /c claude.cmd -p "<safePrompt>" --output-format stream-json --verbose
+  ↓
+node-pty PTY spawn（需 build tools）
+  ↓
+onData → 累積 raw output（含 ANSI）
+  + PID poller 每秒確認 process 存活
+  ↓
+onExit（或 PID poller 觸發 kill）
+  ↓
+stripAnsi → parse JSON stream → 取 ev.type === 'result'
+  ↓
+Push Message API → 推結果給 userId
+```
+
+這個流程的複雜度，完全來自「claude 不是一個普通的 CLI 工具」這個事實。它假設自己跑在 terminal 裡，輸出走 Console API，行為和一般 pipe-friendly 的 CLI 完全不同。
