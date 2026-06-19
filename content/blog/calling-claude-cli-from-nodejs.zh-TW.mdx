@@ -44,15 +44,17 @@ function resolveCmd(name: string): { cmd: string; wrap: boolean } {
 
 ---
 
-## 坑 2：claude 和 agy 都用 WriteConsole() 輸出，pipe 捕捉不到
+## 坑 2：agy 用 WriteConsole() 輸出，pipe 捕捉不到；claude 另有別情
 
-claude 和 agy 都是 TUI 應用，輸出走 Windows Console API（WriteConsoleW），不走 file descriptor。這類工具偵測到 stdout 不是真正的 TTY 時，會繞過 fd 1 直接寫 Console Screen Buffer，導致 `child_process.spawn` 的 `stdio: 'pipe'` 捕捉到 0 bytes。`agy -p` 和 `claude -p` 透過 spawn 執行時，stdout/stderr 完全空白，程式靜默結束。
+agy 是 TUI 應用，輸出走 Windows Console API（WriteConsoleW）。偵測到 stdout 不是真正的 TTY 時，會繞過 fd 1 直接寫 Console Screen Buffer，導致 `child_process.spawn` 的 `stdio: 'pipe'` 捕捉到 0 bytes。
 
-解法：用 `node-pty` 建立 ConPTY（Windows 虛擬終端機），讓工具以為自己在真實終端機裡執行。ConPTY 攔截 WriteConsole() 輸出後透過 pipe 傳回 Node.js：
+claude 的情況不同。實測 `claude -p "say hi" > test.txt` 可以正確捕捉輸出（非 0 bytes），stdout 正常工作。當初在開發過程中曾記錄「兩者都 WriteConsole」，事後查 git log 發現：那個結論是誤診——當時 node-pty 直接 spawn `claude.cmd`，但 node-pty 無法執行 `.cmd` 檔（Windows error 193），導致空輸出，被誤判為 WriteConsole 行為。`.cmd` 問題在同一天的後續 commit 加上 `cmd.exe /c` wrapper 後修掉了，claude 的 stdout 一直都是正常的。
+
+儘管如此，claude 仍然用 PTY 執行，原因是 `--output-format stream-json --verbose` 的輸出是長 JSON 行，在窄終端會被強制換行導致解析失敗，PTY 設 `cols: 32000` 可以確保單行完整：
 
 ```ts
-// agy：cols 設一般寬度即可
-const agySess = pty.spawn(cmd, args, {
+// agy：WriteConsole 問題，必須用 PTY
+const agySess = pty.spawn(agyCmdPath, agyArgs, {
   name: 'xterm-color',
   cols: 220,
   rows: 50,
@@ -60,8 +62,8 @@ const agySess = pty.spawn(cmd, args, {
   env: process.env as Record<string, string>,
 });
 
-// claude：cols 設超寬，防止 --output-format stream-json 的 JSON 被終端換行截斷
-const claudeSess = pty.spawn(cmd, args, {
+// claude：stdout 正常，但 stream-json 模式需要超寬終端防止 JSON 換行
+const claudeSess = pty.spawn('cmd.exe', ['/c', claudeCmdPath, '-p', prompt, '--output-format', 'stream-json', '--verbose'], {
   name: 'xterm-color',
   cols: 32000,
   rows: 50,
@@ -70,7 +72,7 @@ const claudeSess = pty.spawn(cmd, args, {
 });
 ```
 
-教訓：先測 `claude -p "hi" > test.txt`；0 bytes 就是走 Console API，需要 PTY。claude 用 `cols: 32000` 是為了確保 stream-json 模式的長 JSON 行不被終端強制換行。
+教訓：遇到 0 bytes 輸出，先分清楚是 WriteConsole 還是 .cmd 無法直接 spawn 的問題——兩個症狀相同，根因不同，解法也不同。
 
 ---
 
@@ -145,6 +147,8 @@ timeout 到了 kill PTY，server stderr 噴出來自 `conpty_console_list_agent`
 
 解法：`const safePrompt = prompt.replace(/\r?\n/g, ' ');`
 
+這個問題只影響走 `cmd.exe /c` 的路徑。claude 是 `.cmd`（`wrap: true`），所以有這個問題；agy 是 `.exe`（`wrap: false`），直接 spawn，不經過 cmd.exe，所以不受影響。
+
 教訓：經過 `cmd.exe /c` 的字串，換行符必須先替換。超長 prompt（接近 8191 字元限制）另外考慮改用 stdin 傳入。
 
 ---
@@ -184,8 +188,8 @@ await client.replyMessage({
   replyToken: event.replyToken,
   messages: [{ type: 'text', text: '✅ 指令已受理，執行中...' }],
 });
-const result = await runClaude(prompt);
-await client.pushMessage({ to: userId, messages: [{ type: 'text', text: result }] });
+const { text } = await runClaudeSession(prompt, sessionId, userId);
+await client.pushMessage({ to: userId, messages: [{ type: 'text', text }] });
 ```
 
 教訓：replyToken 一次性有時效，立刻消耗；userId 保存供 Push API 使用。
