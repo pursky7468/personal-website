@@ -44,20 +44,22 @@ function resolveCmd(name: string): { cmd: string; wrap: boolean } {
 
 ---
 
-## 坑 2：claude 和 agy 用 WriteConsole() 輸出，pipe 捕捉不到
+## 坑 2：agy 用 WriteConsole() 輸出，pipe 捕捉不到
 
-實際上，claude 和 agy 都是 TUI 應用，輸出走 Windows Console API（WriteConsole()），不走 file descriptor。許多現代 CLI 工具在偵測到 stdout 不是真正的 TTY 時，會繞過 fd 1，直接呼叫 WriteConsoleW 向 Console Screen Buffer 寫入，導致 `child_process.spawn` 的 `stdio: 'pipe'` 捕捉到 0 bytes。
+agy 是 TUI 應用，輸出走 Windows Console API（WriteConsoleW），不走 file descriptor。這類工具在偵測到 stdout 不是真正的 TTY 時，會繞過 fd 1 直接寫 Console Screen Buffer，導致 `child_process.spawn` 的 `stdio: 'pipe'` 捕捉到 0 bytes。
 
-結果：pipe 捕捉到的 stdout 是 0 bytes。Process 執行完成，輸出消失在虛空。
+實測：`spawn('agy.exe', ['--print', 'hi'], { stdio: ['ignore', 'pipe', 'pipe'] })` → `stdout bytes: 0`。
 
-解法：改用 `node-pty` 模擬 PTY。claude 和 agy 偵測到 TTY 環境後，才會走正常的輸出路徑：
+注意：**claude 不在此列**。claude 的 stdout pipe 正常工作（實測捕捉到輸出），但程式碼仍選擇用 `node-pty`，原因是 `--output-format stream-json` 的 JSON 輸出在窄終端會換行斷行，用 PTY 並設 `cols: 32000` 可以確保不換行、JSON 結構完整。
+
+解法（agy 必須用 PTY；claude 用 PTY 是為了 stream-json 輸出穩定）：
 
 ```ts
 import * as pty from 'node-pty';
 
 const proc = pty.spawn(cmd, args, {
   name: 'xterm-color',
-  cols: 220,
+  cols: 220,   // agy 用；claude 用 cols: 32000 防止 JSON 換行
   rows: 50,
   cwd: WORK_DIR,
   env: process.env as Record<string, string>,
@@ -66,7 +68,7 @@ const proc = pty.spawn(cmd, args, {
 proc.onData((data) => { output += data; });
 ```
 
-教訓：先測試 `claude -p "hi" > test.txt`，若 test.txt 是 0 bytes，就是走 Console API，需要 PTY。
+教訓：懷疑 CLI 走 Console API 時，先測 `<tool> > test.txt`；0 bytes 才需要 PTY。claude 是例外——pipe 可用，但 stream-json 模式下 PTY 的 wide cols 有額外價值。
 
 ---
 
@@ -188,9 +190,11 @@ await client.pushMessage({ to: userId, messages: [{ type: 'text', text: result }
 
 ---
 
-## 坑 9：Windows 預設 Code Page 導致中文亂碼
+## 坑 9：Windows Code Page 設定導致中文亂碼
 
-在繁體中文 Windows（預設 CP950）下，PTY 捕捉到的中文輸出變成亂碼。Windows Console 預設 Code Page 是 CP950（Big5），直接當 UTF-8 處理就亂掉。
+Windows Console 預設 Code Page 在繁體中文安裝下是 CP950（Big5）；但現代 Win11 若在「區域設定」裡勾選了 Beta: 使用 UTF-8，`chcp` 會回報 65001，此時這個坑不觸發。不確定當下環境時，主動切換 encoding 是安全的防禦性措施。
+
+PowerShell 本身的輸出 encoding 和 Console Code Page 是分開的設定，即使 Console 已是 UTF-8，PowerShell pipe 仍可能走 UTF-16 LE，需要另外指定。
 
 解法：shell 指令執行時強制切換 Console encoding 為 UTF-8（Code Page 65001）：
 
@@ -205,17 +209,20 @@ export function runShell(command: string): Promise<string> {
 
 ---
 
-## 坑 10：node-pty 需要 native build tools
+## 坑 10：node-pty 需要 native build（多數情況不成立）
 
-`npm install node-pty` 在 Windows 報錯 `node-gyp rebuild failed`，提示缺少 C++ 編譯環境或 Python。
+第一反應：「node-pty 有原生 C++ 模組，Windows 一定要裝 Build Tools」。
 
-node-pty 包含原生 C++ 模組，Windows 需要編譯環境：
+實測：`npm install node-pty@1.1.0`，安裝目錄下有 `prebuilds/win32-x64/` 資料夾，裡面已有預編譯的 `.node` 檔。npm 優先使用 prebuilt，整個安裝過程不需要 node-gyp、不需要 C++ 環境。
 
-```
-winget install Microsoft.VisualStudio.2022.BuildTools
-```
+node-pty v1.x 對以下組合提供 prebuilt：`win32-x64`、`win32-arm64`、`darwin-x64`、`darwin-arm64`。多數 Windows 開發環境（x64 + 主流 Node.js LTS）直接 `npm install` 即可。
 
-教訓：node-pty 的 README 沒有把這個前置需求放在最顯眼的位置。Windows 用戶在 npm install 前需要確認 build tools 已安裝。
+只有以下情況才需要 Build Tools：
+- Node.js ABI 版本沒有對應的 prebuilt（罕見）
+- 使用 nvm 切換到非 LTS 的 nightly build
+- 手動從 source 安裝（加了 `--build-from-source` flag）
+
+教訓：先裝再試，真的報 `node-gyp rebuild failed` 才去查 build tools。
 
 ---
 
@@ -233,7 +240,7 @@ where claude → resolveCmd() → 是否 .cmd
   ↓ YES
 cmd.exe /c claude.cmd -p "<safePrompt>" --output-format stream-json --verbose
   ↓
-node-pty PTY spawn（需 build tools）
+node-pty PTY spawn（prebuilt，通常免 build tools）
   ↓
 onData → 累積 raw output（含 ANSI）
   + PID poller 每秒確認 process 存活
@@ -245,4 +252,4 @@ stripAnsi → parse JSON stream → 取 ev.type === 'result'
 Push Message API → 推結果給 userId
 ```
 
-這個流程的複雜度，完全來自「claude 不是一個普通的 CLI 工具」這個事實。它假設自己跑在 terminal 裡，輸出走 Console API，行為和一般 pipe-friendly 的 CLI 完全不同。
+這個流程的複雜度，主要來自 agy 的 Console API 輸出（要 PTY）、ConPTY 的 EOF 不穩定性（要 PID poller）、以及 cmd.exe 當 bridge 帶來的 newline 地雷。claude 本身的 stdout pipe 是正常的，PTY 的選用反而是為了 `--output-format stream-json` 的寬度穩定性，而非因為 Console API 限制。
