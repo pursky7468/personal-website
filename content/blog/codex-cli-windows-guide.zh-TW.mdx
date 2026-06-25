@@ -1,0 +1,240 @@
+---
+title: "Codex CLI 實戰指南：從零到背景非同步執行"
+date: "2026-06-25"
+summary: "記錄實際踩坑後整理的 Codex CLI 完整呼叫方式，包含 Windows PowerShell 的 stdin 陷阱、encoding 問題，以及如何安全地把 Codex 整合進工作流。"
+tags: ["codex", "cli", "ai-tools", "windows", "workflow"]
+---
+
+## 前言
+
+OpenAI Codex CLI（`codex`）是一個可以在終端機直接跑 AI agent 任務的工具，能讀你的 repo、做 code review、分析文件。
+
+用起來不複雜，但有幾個在 Windows 上幾乎一定會踩到的坑——尤其是背景執行時的 stdin 行為，以及 PowerShell 5.1 的 encoding 問題。這篇文章把我實際踩過的坑整理成可以直接套用的範本。
+
+---
+
+## ⚠️ 最重要的一條：stdin 一定要明示 redirect
+
+這是整篇文章最核心的規則，**違反它 = 背景任務無限卡死**。
+
+Codex CLI 文件對 `[PROMPT]` 有這樣一句話：
+
+> *If stdin is piped and a prompt is also provided, stdin is appended as a `<stdin>` block.*
+
+白話：**只要 codex 偵測到 piped stdin，就一定會去讀它**——就算 prompt 已經用參數正常傳進去，codex 還是會嘗試 drain stdin。
+
+在背景執行時，stdin 是一條永遠不會收到 EOF 的 pipe。結果就是：codex 永遠等 stdin 結束，任務輸出停在 `Reading additional input from stdin...` 或完全空白，無限卡住。
+
+**解法只有一個**：每次呼叫 codex 都把 stdin 明示 redirect：
+
+| Prompt 來源 | stdin redirect |
+|---|---|
+| 自訂 prompt（從 stdin 讀） | `< "prompt.txt"` |
+| 內建 review / 不需要 stdin | `< NUL`（立刻給 EOF） |
+
+PowerShell 5.1 沒有 `<` 運算子，所以一律包在 `cmd /c '...'` 裡執行。
+
+---
+
+## 使用場景
+
+**適合用 Codex 的時機：**
+
+- 寫完 code 或文件後，需要一個**跨模型的 second opinion**（Codex 用不同模型，能抓到你自己 review 會有 blind spot 的問題）
+- 對 git uncommitted / committed 變更做**自動 review**
+- 對特定文件做**客製評估**，可以自訂 focus 區域
+- 驗證文件和實作的一致性
+
+**不適合的場景：**
+
+- 你自己能快速解決的瑣事（浪費 token + OpenAI billing）
+- 需要持續對話的任務（Codex 是 one-shot，context 不延續）
+- 大量檔案掃描（用 `grep` / `ripgrep` 更省）
+- 高度依賴專案內部 context 的任務（Codex 不知道你的專案規範）
+- 機密敏感資料（走 OpenAI，和你用的其他 AI 是不同隱私邊界）
+
+---
+
+## Prerequisites
+
+```bash
+codex --version
+```
+
+確認已安裝（本文對照 **0.131.0**）。`codex` 必須在 PATH 上；未登入時 codex 會自行報錯。
+
+> **本文所有範本的適用前提**：你能在 **cmd**（不是 PowerShell）直接執行 `codex` 並正常工作——例如跑一個簡單的 `codex exec "hello"` 會有回應。若 cmd 下 codex 無法使用，需先完成安裝與認證設定（API key 環境變數、登入等），本文不涵蓋那個部分。
+
+---
+
+## 兩種 Invocation 模式
+
+### 模式 A：`codex exec` — 通用 agent
+
+```
+codex exec [OPTIONS] [PROMPT]
+```
+
+最有彈性，可以自由描述 scope 和 focus。**客製 review 一律走這條。**
+
+### 模式 B：`codex exec review` — 內建 code review 子命令
+
+```
+codex exec review [OPTIONS] [PROMPT]
+```
+
+Codex 對 review 有 specialized prompting，內建 scope flag：`--uncommitted` / `--base <BRANCH>` / `--commit <SHA>`。
+
+**注意限制：**
+- `codex exec review` **沒有** `-s/--sandbox`、也**沒有** `-C/--cd`
+- 要自訂 review prompt 一律走模式 A
+
+---
+
+## 實際呼叫範本
+
+### 範本 1 ⭐ 自訂 prompt（推薦）
+
+**Step 1** — 把 prompt 寫到一個 UTF-8 的 temp 檔。
+
+在 PowerShell 裡用 `Out-File -Encoding utf8`，或任何能輸出 UTF-8 的方式：
+
+```powershell
+@"
+請讀 C:\MyProject\src\feature.ts，
+針對以下重點做 review：
+1. 錯誤處理是否完整
+2. 有無明顯的效能問題
+"@ | Out-File -FilePath "$env:TEMP\codex-prompt.txt" -Encoding utf8
+```
+
+**Step 2** — 透過 `cmd /c` 執行（PowerShell 背景執行）：
+
+```powershell
+cmd /c 'codex exec -C "C:\MyProject" -s read-only -o "%TEMP%\codex-findings.txt" - < "%TEMP%\codex-prompt.txt"'
+```
+
+**各參數說明：**
+
+| 參數 | 用途 |
+|---|---|
+| `-C "C:\MyProject"` | Codex 的工作根目錄（sandbox 只保證讀得到根目錄內的檔） |
+| `-s read-only` | Sandbox 模式：只讀，不讓 codex 寫檔 |
+| `-o "%TEMP%\codex-findings.txt"` | Final findings 直接寫到這個檔 |
+| `-` | Positional prompt 設成 `-`，明示「從 stdin 讀 prompt」 |
+| `< "%TEMP%\codex-prompt.txt"` | 把 stdin redirect 成 prompt 檔（**鐵則**） |
+
+**Step 3** — 讀取結果：
+
+```powershell
+Get-Content "$env:TEMP\codex-findings.txt"
+```
+
+---
+
+### 範本 2 內建 review（無客製）
+
+```powershell
+Set-Location 'C:\MyProject'
+cmd /c 'codex exec review --uncommitted -o "%TEMP%\codex-findings.txt" < NUL'
+```
+
+- `< NUL`：review 不需要額外 prompt，但 stdin 仍然要給 EOF，否則背景一樣卡
+- 適合「剛改完一輪 code，快速掃 obvious 問題」的場合
+
+---
+
+## 重要 Flags
+
+`codex exec`（模式 A）完整 flag 參考：
+
+| Flag | 說明 |
+|---|---|
+| `-s, --sandbox <MODE>` | Sandbox 政策：`read-only` / `workspace-write` / `danger-full-access`。Review 一律 `read-only` |
+| `-m, --model <MODEL>` | 指定 model（預設由 config 決定） |
+| `-C, --cd <DIR>` | Codex 工作根目錄 |
+| `-o, --output-last-message <FILE>` | 把 agent 最後一段訊息（= findings）寫到檔案 |
+| `--skip-git-repo-check` | 允許在非 git 目錄執行 |
+| `--json` | Events 以 JSONL 印到 stdout |
+| `--dangerously-bypass-approvals-and-sandbox` | **危險，不要用** |
+
+---
+
+## Windows Encoding 問題
+
+這個坑在 Windows 上幾乎一定會踩到。
+
+**問題根源：**
+
+PowerShell 5.1 的 `$OutputEncoding` 預設是 **US-ASCII**，它支配「PowerShell pipe → native exe」的編碼。所以：
+
+```powershell
+# ❌ 這樣中文會變 ???
+"請 review 這個函式" | codex exec -
+
+# ❌ 這樣也不行——Get-Content -Encoding UTF8 只修「檔案→PowerShell」這段
+Get-Content "prompt.txt" -Encoding UTF8 | codex exec -
+```
+
+**解法：**
+
+```powershell
+# ✅ cmd /c 的 < 是 byte-level redirect，完全繞過 $OutputEncoding
+cmd /c 'codex exec - < "prompt.txt"'
+```
+
+`cmd /c '... < file'` 是 byte-level redirect，UTF-8 的 prompt 檔 bytes 原封不動進 codex，不經過 PowerShell 的 `$OutputEncoding`。
+
+**如何驗證 prompt 有正確抵達：**
+
+查看 codex 的輸出開頭，它通常會 echo 收到的 prompt。如果中文完整（`步驟` 不是 `???`）就沒問題。
+
+---
+
+## 背景執行
+
+Codex review 可能跑數分鐘，建議背景執行避免卡住終端機：
+
+```powershell
+# PowerShell 背景 Job
+$job = Start-Job -ScriptBlock {
+    cmd /c 'codex exec -C "C:\MyProject" -s read-only -o "%TEMP%\codex-findings.txt" - < "%TEMP%\codex-prompt.txt"'
+}
+
+# 等待任務完成、接收輸出，並清理背景資源
+$job | Wait-Job | Receive-Job
+Remove-Job $job
+
+# 讀結果
+Get-Content "$env:TEMP\codex-findings.txt"
+```
+
+**判斷是否卡住：**
+
+過了 1–2 分鐘，任務輸出仍停在 `Reading additional input from stdin...` 或完全空白 → 99% 是 stdin 沒 redirect。停掉任務，補上 `< NUL` 或 `< "prompt.txt"` 再重試。
+
+---
+
+## Common Pitfalls
+
+| 症狀 | 原因 | 修法 |
+|---|---|---|
+| Codex 卡住，輸出停在 `Reading additional input from stdin...` 或全空白 | Stdin 沒 redirect，背景 pipe 沒有 EOF | `cmd /c '... < "prompt.txt"'` 或 `< NUL` |
+| Prompt 或 output 中文變 `???` | 用了 pipe 餵 codex，PS 5.1 `$OutputEncoding` = US-ASCII | 改 `cmd /c 'codex ... < "utf8檔"'`，不要用 `\|` |
+| `error: unexpected argument '--sandbox' found` | `codex exec review` 沒有 `--sandbox` | 拿掉 `--sandbox`；要設 sandbox → 改模式 A |
+| `error: ... cannot be used with [PROMPT]` | Review 子命令 scope flag 與 custom prompt 互斥 | 自訂 review prompt → 改模式 A |
+| Review 在非 git repo 失敗 | Review 預設要 git repo | 加 `--skip-git-repo-check` |
+
+---
+
+## 小結
+
+Codex CLI 整合進工作流的訣竅就三點：
+
+1. **stdin 一定 redirect**（`< "prompt.txt"` 或 `< NUL`）——這條不遵守，背景執行一定卡
+2. **用 `cmd /c` 包住**——繞過 PowerShell 的 encoding 問題
+3. **加 `-o` 輸出到檔案**——不用在大量 stdout 中撈 findings
+
+Codex 做跨模型 review 的價值在於它用不同的視角看你的 code，能抓到你自己 review 時的 blind spot。但它是 one-shot、無延續 context，所以 prompt 要把 scope 和 focus 說清楚，讓它知道你要它看什麼。
+
+版本對照：**codex-cli 0.131.0**。升版後 flag 可能有變動，建議先跑一次 `codex exec --help` 確認。
