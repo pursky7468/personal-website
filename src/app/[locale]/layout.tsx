@@ -28,6 +28,9 @@ export async function generateMetadata({
       template: '%s | Steve Lin',
     },
     description: t('siteDescription'),
+    verification: {
+      google: 'Dpz6zNOfZ7-VX9GodJ-_-xbry1hTjNnDVt0amm8gMTM',
+    },
     openGraph: {
       title: 'Steve Lin',
       description: t('siteDescription'),
