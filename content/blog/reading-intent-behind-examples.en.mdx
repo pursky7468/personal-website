@@ -1,0 +1,75 @@
+---
+title: "When AI follows the example but misses the rule behind it"
+date: 2026-07-17
+tags: [AI, LLM, Human-AI Collaboration, Intent, Workflow]
+summary: A postmortem on one real collaboration failure — AI executing a convention-expressed-as-example as a literal one-off task, and why the depth of intent modeling matters more than model capability.
+draft: false
+---
+
+I asked an AI agent to help me organize a scattered pile of material. There were two parallel workstreams at the time — call them Platform A and Platform B — with content spread across the conversation and a combined planning doc. When I described the structure I wanted, I reached for Platform A as an example: "For instance, you could make a 'Platform A updates' folder with one file per field. And if you have a better approach, feel free to propose it."
+
+It did the work, and it did it reasonably well. It generalized the folder *container* into a whole taxonomy — core, exports, assets, confidential. But the "one file per field" pattern — the actual update format — it implemented only for the Platform A I'd used as an example. Platform B's existing scattered content got filed away as "just another document," assumed complete.
+
+A few turns later I noticed the asymmetry: every time Platform B came up, the AI dropped new content back into the old location instead of mirroring Platform A's new structure. I asked it: "Why didn't you follow the structure we agreed on?" Only then did it add the symmetrical folder for Platform B.
+
+On the surface this reads as "the AI missed a step." But the interesting question is buried underneath: why it missed.
+
+## The root wasn't in the later turns
+
+The intuition is to blame the later turns — each time Platform B came up, the AI picked the wrong location. But those turns were individually correct: right bullets, right status, reasonable filing. The asymmetry wasn't born there. It was born in the single "reorganize the folders" turn. Every turn after that just ran faithfully along the asymmetrical track laid down in that one moment.
+
+I call this failure mode **Literal-Instance Execution**, as opposed to **Principle Extraction**. When someone uses a concrete example to express a general expectation, the AI has two paths:
+
+| | Literal-instance execution | Principle extraction |
+|---|---|---|
+| Target | The one the user named | The named one + all siblings |
+| Output | A Platform A folder | The rule "every field of every platform gets a mirror file," applied to A, B, and a future C |
+| Correctness | Locally correct | Globally consistent |
+| Failure signature | Asymmetry surfaces turns later | — |
+
+It took the first path. And the sneakier part: it *did* generalize on the folder-container axis, while staying literal on the update-pattern axis. Partial generalization is harder to catch than none at all, because it looks like the model was thinking — the asymmetry only exposes itself later.
+
+## Intent has layers
+
+This is what I actually wanted to understand afterward: a single sentence can be read at several depths. That one line — "make a Platform A folder, one file per field" — unfolds like this:
+
+```text
+L0  Literal request     "make a Platform A folder, one file per field"
+L1  Stated intent        "I want to see at a glance which file maps to which field"
+L2  Underlying goal       "I want this whole set navigable, maintainable, no longer scattered"
+L3  Value and context     "I lean on structure to lower cognitive load; mess makes me distrust the system"
+```
+
+An AI operating at L2 asks itself: "What would make *the whole set* navigable?" — and the answer obviously includes Platform B, so it generalizes naturally. An AI stuck at L0 asks only: "Which folder does the user want?" — Platform A, done.
+
+The failure compresses to one line: **the AI executed at L0 while I was speaking at L2.** I had even put the escalation signals right on the surface — "for instance" says "this is a sample, not the full set," and "feel free to propose a better approach" says "read upward, don't stop at the literal." Both phrases are explicit L0→L2 signals, and it treated them as filler.
+
+Reading "the deeper intent" sounds mystical, but it isn't mind-reading. It's a habit: take any concrete request and first ask "which larger goal is this an instance of?" — then let that goal, not the literal phrasing, calibrate the scope of action.
+
+## Three signals present at once, all missed
+
+Looking back, three signals all pointed at "this is a general rule":
+
+- **Linguistic markers**: "for instance," "if you have a better approach" — explicit flags that "what I gave you is a sample."
+- **A parallel case in the room**: Platform B was an equally active workstream, sitting right nearby in the conversation. A visible sibling standing next to the example is the strongest generalization cue there is.
+- **Identical situation**: Platform B was in exactly the same "scattered, awaiting cleanup" state as Platform A. Same situation is a signal for same treatment.
+
+Three signals present simultaneously, and still missed — which says the problem isn't a shortage of signal. It's the absence of a habit that actively scans for it.
+
+## An operational heuristic
+
+I've distilled it into three questions to run on any concrete instruction:
+
+1. **Example detection**: does the sentence contain "e.g. / for instance / and such / a better approach"? If so → it's almost certainly a sample of a rule; default to operating one layer up.
+2. **Sibling scan**: does the object I'm handling have brothers nearby in the same situation — equally active, equally scattered, equally awaiting cleanup? If so → fold them in, or at minimum flag "these should be mirrored too" for the person to decide.
+3. **Escalation rewrite**: rewrite the L0 request as one L2 goal — "what they actually want is the ___ system/state" — and let that goal, not the literal phrasing, define the scope.
+
+If any of the three hits, don't stop at the literal instance. There's a boundary to watch here: over-escalating turns into unilaterally expanding scope, which is its own failure. When my inferred L2 conflicts with the stated L0, the default isn't to pick a side myself — it's to surface the conflict and let the person adjudicate.
+
+## Capability isn't the bottleneck
+
+Worth stating plainly: the AI was fully capable of building Platform B's folder. What it lacked wasn't skill — it was the habit of reading one layer up. My bet is that as model capability keeps climbing, collaboration failures will concentrate more and more at the intent layer rather than the execution layer. Execution stopped being the hard part a while ago; reading intent is.
+
+The good news is that "reading deeper intent" can be engineered — it doesn't have to rest on mystical intuition. It's a set of checkable questions (the three above), which means it can be explicitly demanded, audited, and written into an agent's operating rules.
+
+One last observation, about this piece itself. This retrospective only exists because **I caught the failure and pushed to dig into it** — the AI never noticed on its own; not one of those locally-correct turns ever "felt wrong." That neatly confirms the earlier point: at this stage, the value isn't in whether the AI makes mistakes, but in whether a human can see *where* it went wrong and convert that into a reusable rule. Judgment is still the human's most critical contribution to this collaboration.
