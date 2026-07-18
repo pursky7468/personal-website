@@ -7,7 +7,7 @@
     "toggleTheme": "Toggle theme"
   },
   "home": {
-    "heroTagline": "Automation engineer. 9 years integrating robots, vision systems, and industrial hardware. Now exploring where AI fits in the stack — and where it doesn't.",
+    "heroTagline": "Automation engineer. Over a decade integrating robots, vision systems, and industrial hardware. Now exploring where AI fits in the stack — and where it doesn't.",
     "latestWriting": "Latest Writing",
     "allPosts": "All posts",
     "projects": "Projects",
@@ -32,7 +32,7 @@
     "professional": "Professional",
     "exploring": "Personal / Exploring",
     "bio": [
-      "I'm Steve, an automation engineer based in Taiwan. For 9 years I've been building industrial systems — robotic arms, 3D point cloud inspection, AMR integration, and real-time machine communication over TCP/IP and PLC. The systems I work on have hard constraints: latency, accuracy, and the physical cost of failure.",
+      "I'm Steve, an automation engineer based in Taiwan. For over a decade I've been building industrial systems — robotic arms, 3D point cloud inspection, AMR integration, and real-time machine communication over TCP/IP and PLC. The systems I work on have hard constraints: latency, accuracy, and the physical cost of failure.",
       "That background shapes how I think about AI. Most of the computation problems in automation are already solved — simulation software handles kinematics, path planning, and code generation fine. The gap I keep running into is the translation layer: turning informal production requirements into executable specs, or correlating machine logs to diagnose a failure. That's where I'm experimenting with LLM tooling.",
       "The side projects here reflect that exploration. They're also how I stay sharp on the software side: clean architecture, test coverage, API design.",
       "Day job: C# and C++. Weekends: Python and TypeScript."
@@ -40,9 +40,9 @@
     "currentlyExploringText": "Whether LLM assistance can make the requirements-to-spec translation more systematic — without losing the domain judgment that makes the output actually useful."
   },
   "meta": {
-    "siteDescription": "Automation engineer with 9 years in robotics and industrial systems. Exploring where AI fits in the stack — side projects, notes, and experiments.",
+    "siteDescription": "Automation engineer with over a decade in robotics and industrial systems. Exploring where AI fits in the stack — side projects, notes, and experiments.",
     "blogDescription": "Writing about things I build and learn.",
-    "projectsDescription": "Things I've built.",
+    "projectsDescription": "A showcase of AI-augmented development. My core automation-integration work is under client confidentiality; these side projects are where I stay sharp on software and experiment with LLM tooling.",
     "aboutDescription": "About Steve Lin — automation engineer exploring AI and LLM tooling."
   }
 }

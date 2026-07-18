@@ -1,6 +1,6 @@
 {
   "bio": [
-    "I'm Steve, an automation engineer based in Taiwan. For 9 years I've been building industrial systems — robotic arms, 3D point cloud inspection, AMR integration, and real-time machine communication over TCP/IP and PLC. The systems I work on have hard constraints: latency, accuracy, and the physical cost of failure.",
+    "I'm Steve, an automation engineer based in Taiwan. For over a decade I've been building industrial systems — robotic arms, 3D point cloud inspection, AMR integration, and real-time machine communication over TCP/IP and PLC. The systems I work on have hard constraints: latency, accuracy, and the physical cost of failure.",
     "That background shapes how I think about AI. Most of the computation problems in automation are already solved — simulation software handles kinematics, path planning, and code generation fine. The gap I keep running into is the translation layer: turning informal production requirements into executable specs, or correlating machine logs to diagnose a failure. That's where I'm experimenting with LLM tooling.",
     "The side projects here reflect that exploration. They're also how I stay sharp on the software side: clean architecture, test coverage, API design.",
     "Day job: C# and C++. Weekends: Python and TypeScript."
