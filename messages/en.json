@@ -22,6 +22,7 @@
   },
   "projects": {
     "title": "Projects",
+    "intro": "A showcase of AI-augmented development. My core automation-integration work is under client confidentiality; these side projects are where I stay sharp on software and experiment with LLM tooling.",
     "noProjects": "Projects coming soon."
   },
   "about": {

@@ -26,7 +26,8 @@ export default function ProjectsPage({ params }: { params: { locale: string } })
   return (
     <div className="mx-auto max-w-5xl px-4 sm:px-6 py-16">
       <AnimateIn>
-        <h1 className="text-3xl font-bold tracking-tight mb-10">{t('title')}</h1>
+        <h1 className="text-3xl font-bold tracking-tight mb-4">{t('title')}</h1>
+        <p className="text-muted-foreground leading-relaxed max-w-2xl mb-10">{t('intro')}</p>
       </AnimateIn>
 
       {projects.length > 0 ? (
