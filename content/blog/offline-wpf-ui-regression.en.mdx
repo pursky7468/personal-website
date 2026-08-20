@@ -1,0 +1,280 @@
+---
+title: "Moving WPF UI Tests to a Machine With No Screen: From an Uncatchable Layout Bug to a Verifier You Can Trust"
+date: 2026-08-20
+tags: ["WPF", "UI Testing", ".NET", "PowerShell", "CLR", "test-design"]
+summary: "A layout bug that compiled, passed every test, and looked fine forced me to render WPF offline and measure geometry. The real enemy was false greens."
+draft: false
+---
+
+## Where It Started: A Layout Bug Nothing Could Catch
+
+One of the settings pages had this bug:
+
+- A long string (34 CJK characters) pushed the Value column on the right out of the visible area
+- And the horizontal scrollbar was set to `Hidden`, so you **couldn't scroll to it** — that field was simply gone, permanently
+
+What made this bug nasty is that it slipped past every existing line of defense: **it compiled, every unit test was green, and with normal data you couldn't see it by eye either.** It only appeared at specific data lengths, and even then the page still looked perfectly fine — just missing a piece.
+
+The only way to catch it was to **actually render the page and measure its geometry**. After fixing it, I froze that verification method into a tool instead of leaving it in my head.
+
+---
+
+## The Core Insight: WPF Layout and Rasterization Don't Need an OS Window
+
+This is the premise the whole thing rests on: **WPF layout and rasterization do not need an HWND.**
+
+You can load the compiled main assembly and render the page to a PNG using **real BAML + real resource dictionaries + real saved data** — no window opens, nothing ever appears on the user's screen.
+
+To produce an image that matches the real screen, you only need four ingredients:
+
+1. **Compiled BAML** — `Assembly.LoadFrom(main exe)`, then instantiate the page type via reflection
+2. **Resource dictionaries** — must be loaded with `Application.LoadComponent`
+3. **DataContext (real data)** — fed in from a real saved settings json
+4. **An STA thread**
+
+Then `Measure` → `Arrange` → `UpdateLayout` → `RenderTargetBitmap.Render(visual)`. No HWND anywhere in that chain.
+
+### Fidelity of the Two Render Modes
+
+| Mode | What it reads | Use case |
+|---|---|---|
+| `Compiled` (default) | Instantiate the page type via reflection → load the compiled, real BAML | Formal verification; requires a build first |
+| `XamlFile` | Parse the `.xaml` directly (root element swapped for `Grid`, localization markup swapped for literal strings) | A quick look without building |
+
+I quantified the difference between the two modes with a pixel-by-pixel comparison: **out of 1,908,000 pixels, only 3 differed** — antialiasing on a single glyph.
+
+---
+
+## The Real Enemy Isn't Rendering — It's the False Green
+
+Once the tool could render, the enemy changed. It was no longer "can't produce an image"; it was "the test passes but nothing was actually verified."
+
+Both false-green paths below were measured, not imagined:
+
+| Scenario | Without gates | With gates |
+|---|---|---|
+| Edited the xaml but forgot to build (experimentally injected `MinWidth="3000"`) | **23 PASS / 0 FAIL / exit 0**, and the screenshot looks perfect | freshness gate blocks it, exit 2 |
+| The settings file path declared by the fixture doesn't exist | The render engine **silently skips it** and renders with empty data; controls drop 24→10, and **every geometry assertion PASSes** | data gate blocks it, exit 2 |
+
+The first row is especially lethal. The static checks **look at no numeric values at all** (width, Margin, MinWidth), so damage that is purely numeric has nothing to stop it. Worse, that perfect-score screenshot gets committed to version control and becomes permanent evidence of something that isn't true.
+
+So I designed "rebuild → confirm the build actually happened → run the tests" as **one command doing one thing**, rather than three things you can freely reorder, and provided a runner as the single correct entry point:
+
+- **freshness gate** — if any `.xaml` is newer than the compiled assembly, block immediately. Rationale: `Compiled` mode measures compiled BAML, so source that is newer than the assembly means you are grading an old version.
+- **data gate** — if the fixture declares a settings file and that file doesn't exist, block immediately.
+
+The freshness gate has a limitation I have to state honestly: it **only compares timestamps**. It cannot prove the exe was built from that source. Editing and reverting, or copying an exe in from elsewhere, both fool it.
+
+---
+
+## The Three-State Exit Code Contract
+
+This is the one design point I most want to pull out on its own.
+
+- `0` = clean build and all assertions passed
+- `1` = the **page** has a problem
+- `2` = this run **doesn't count** — build failure, unmet precondition, or a tool error. Not "there's a bug," but "nothing was verified"
+
+Most test tools only have two states, 0 and 1. That gap in the design forces a very bad outcome: **"the tool broke" has to disguise itself as "the thing under test broke."**
+
+I hit this for real. When invoking a child process, the argument array wasn't quoted element by element, so a path containing spaces got split into positional arguments and the render engine died outright. That was originally counted as "one render assertion failed," which returned `exit 1` — which reads as "the page is broken," when the truth was that the tool was broken.
+
+The corrected contract is simple: any error thrown by the engine itself returns `exit 2`, and `exit 1` is reserved exclusively for "the page really does have a problem."
+
+---
+
+## What It Actually Checks
+
+**Static checks** (read the `.xaml` source; no build required):
+
+| id | Check |
+|---|---|
+| `S1.xml` | Well-formed XML (tag closure, attribute syntax) |
+| `S2.encoding` | UTF-8 **with BOM** and pure CRLF (files rewritten by scripts often lose both) |
+| `S3.uniformgrid` | No `UniformGrid` whose declared cell count ≠ actual child count (extra declared columns are dead zones) |
+| `S4.unbounded-measure` | **The class of the original bug**: a `ScrollViewer` with `HorizontalScrollBarVisibility` of `Hidden`/`Auto`/`Visible` containing a `UniformGrid` or star columns, without pinning content width to `ViewportWidth` → column width follows content length instead of the viewport |
+| `S5.resources` | Every `{StaticResource X}` key resolves |
+| `S6.*` | Project-specific layout house rules (shared header, color codes and corner radii of the shell and inner panels), declared by the fixture |
+| `S7.*` | Per-page silent-breakage invariants (e.g. the count of `UpdateSourceTrigger=Explicit` — one missing means a field never writes back to the ViewModel) |
+| `S8.parity` | The header Grid and the data-row Grid must have column-for-column identical definitions (otherwise header and data misalign) |
+
+**Render + geometry checks** (measured after loading real styles and real data):
+
+| id | Check |
+|---|---|
+| `R.render@<width>` | Renders successfully at each host width and writes out a PNG |
+| `G1.inbounds@<width>` | Every visible control falls entirely inside the page bounds (**this one is the automated detection of the original bug**) |
+| `G2.overlap@<width>` | Controls in the same Grid, same row, different columns must not overlap |
+| `G3.nonzero@<width>` | No visible control is squeezed to zero width |
+
+The geometry checks are re-run at multiple host widths: the widest, a middle one, and the narrowest the host allows.
+
+**The fixture is a JSON file** declaring the page type, the ViewModel type, the xaml path, the assembly path, the real settings file path, the array of widths to test, plus optional house rules and invariants. Paths are always written relative to the repo root (the tool walks up to find the `.sln` to anchor itself) — **never hardcoded machine paths**.
+
+---
+
+## The Verifier Itself Has to Be Verified
+
+> A checker that only ever goes green is worthless.
+
+So I permanently keep the **pre-fix original xaml** in `test-assets/` as a negative control. The self-test has to produce all three of these results:
+
+| case | exit | stats |
+|---|---|---|
+| Negative control (pre-fix xaml) | 1 | 14 PASS / 42 FAIL |
+| Current xaml, `XamlFile` mode | 0 | 23 PASS / 0 FAIL |
+| Current xaml, `Compiled` mode | 0 | 23 PASS / 0 FAIL |
+
+Any deviation means **the checker is broken, not the page**.
+
+**Why both modes must run**: the bug described under "Landmine 1" below **only surfaces in `Compiled` mode.** `XamlFile` mode swaps localization markup for literal strings up front, so it never loads the assembly that explodes — its all-green result proves nothing. **Running only one mode cannot catch that bug.**
+
+**The checker itself can break — this really happened**: the first version of the color-count check called `RenderTargetBitmap.Render` directly on an element, but that applies the element's own `TranslateTransform`, so it measured blank space and falsely reported "this whole block is a single color." The fix was to temporarily set `RenderTransform` to `Identity` before measuring and restore it afterwards. The lesson is simple: **when the checker cries anomaly, first confirm whether the checker or the artifact is what's broken.**
+
+The color-count check also has an honest limitation: it only proves "this block isn't a solid color." Background + border + text + connection points + antialiasing already add up to 8+ colors, so it can still pass while an icon is blank. To be genuinely sure something was drawn, crop and zoom that region and read it back once.
+
+---
+
+## Five Traps That Don't Raise Errors but Produce Wrong Images
+
+What these five have in common: **the script exits 0 and the PNG is produced — only the contents are wrong.**
+
+### Trap 1: Localization markup renders as `Key: <resource key>`
+
+The localization provider's `DefaultAssembly` / `DefaultDictionary` are attached to the **host window**, and rendering a single page in isolation doesn't inherit them.
+
+Fix: set `LocalizeDictionary.Instance.Culture`, and attach the provider's default assembly / dictionary to the root node being rendered.
+
+### Trap 2: The `Loaded` Event Never Fires (easiest one to hit)
+
+An offline-rendered visual is **never attached to a `PresentationSource`**, so `Loaded` never fires. Any page or control that sets its DataContext inside `Loaded` **renders nothing at all** — while its **layout size stays perfectly normal** (measured: 78×78), so the "zero size" check cannot catch it.
+
+Measured numbers: on the flowchart canvas, **64 out of 211 components were affected** (the ones with their own xaml). The ones using a generic view and setting DataContext in the constructor were fine.
+
+**When adding support for a new page, the very first thing to do is grep the target xaml for `Loaded=`.**
+
+### Trap 3: All Icons Missing
+
+The `Icon` property is marked `[JsonIgnore]`, so it is never in the saved json. The real flow fills it in at load time by looking the name up in a tool list (falling back to a default icon if not found).
+
+Fix: call that icon-filling method (private, so reflection required) before constructing the components.
+
+### Trap 4: Every ID Prints as 0
+
+The ID setter's first line is `if (_idPool.Count == 0) return;` — it **silently swallows the assignment**, including values Json.NET writes during deserialization. `_idPool` is `internal static`, and the real flow only seeds it at load time.
+
+Fix: reflectively add an element to it **before** deserializing.
+
+### Trap 5: No Connections Built → the Whole Diagram Looks Disconnected
+
+If you only insert components without constructing the line objects, **not a single line appears**. Isolated components look fine, but their connected neighbors get misread as disconnected.
+
+Also, **lay out first, then build the lines**: the endpoint coordinate getter checks `this.ActualHeight != 0` and takes the zero-size branch if layout hasn't run yet.
+
+### The Numbers to Read After Every Render
+
+The script prints these itself, and throws if any one of them is off:
+
+- `components added / failed` (failed must be 0)
+- `drawn with ID<=0` (0)
+- `DataContext supplied for N` (a large N means you really did hit Trap 2)
+- `no icon` (0)
+- `distinct colors in the focus region` (≥8; measured normal value 62)
+- `zero rendered size` (0)
+- `lines connected / failed` (failed 0)
+- `out-of-range edges` (0)
+
+---
+
+## CLR / PowerShell Landmines
+
+This section is for implementers. These four are the ones I consider most generally useful.
+
+### Landmine 1: An `AssemblyResolve` Handler Must Not Reference Function-Local Variables
+
+That scriptblock is invoked by the CLR **long after the function that registered it has returned.** The function-locals it captured are gone by then, so the handler **quietly runs an empty loop and returns `$null`** — the symptom being `Could not load file or assembly '<some dependency assembly>'`.
+
+Fix: put the probe paths at **module scope** (`$script:ProbeDirs`), or use `GetNewClosure()`.
+
+### Landmine 2: An `AssemblyResolve` Handler Must Not Be a PowerShell ScriptBlock (StackOverflow)
+
+This causal chain is worth reading once in full:
+
+```text
+Set LocalizeDictionary.Culture
+↓
+Rewrites Thread.CurrentUICulture
+↓
+CLR goes looking for PowerShell's own satellite resources assembly
+↓
+Triggers AssemblyResolve
+↓
+Answering with a ScriptBlock ⇒ PowerShell must run (Join-Path / Test-Path are cmdlets, requiring command discovery)
+↓
+Which needs the same satellite assembly again
+↓
+Infinite recursion ⇒ StackOverflow
+```
+
+And a **StackOverflow is uncatchable**: the process simply vanishes with no error message. It looks exactly like "the tool is unresponsive."
+
+Fix: use a C# handler compiled with `Add-Type`. **Never put any cmdlet inside the handler.**
+
+### Landmine 3: One Process Can Only Run WPF Once
+
+There can be only one `Application` per AppDomain, and once its thread ends the Dispatcher is permanently shut down. So the render engine **must** run as a separate `powershell.exe -STA` child process; running it a second time in the same process yields `PresentationFramework ... E_POINTER`.
+
+### Landmine 4: The Right Criterion for `GetUninitializedObject`
+
+`FormatterServices.GetUninitializedObject` **allocates the object without running the constructor**, which lets you get past dead ends like "this ViewModel's constructor spins up the entire app" — after which you just reflectively fill in the members the target page **actually touches**.
+
+But this trick is **only safe for data containers.** Using it on a WPF control breaks: with the `FrameworkElement` constructor skipped, `InitializeComponent()` throws `XamlParseException: Current local value enumeration is outdated`.
+
+So the criterion is **"is this type a data container?"** — not "is its constructor heavy?"
+
+---
+
+## Architectural Discipline When Extracting the Shared Layer
+
+This machinery ended up being needed by two purposes at once: **UI regression testing**, and **producing manual screenshots delivered to customers.** It had been copy-pasted across four scripts, so it was extracted into a single shared module.
+
+There was exactly one rule for the extraction: **no policy lives in the module.** No verdicts, no exit codes, no localization, no data selection, no cropping, no assertions.
+
+That isn't "not done yet" — it **must not be done**, because the two callers want exactly opposite things:
+
+| | Regression testing | Delivery screenshots |
+|---|---|---|
+| Wants | An unlocalized page with no row selected (identical on every run, so it can serve as a regression baseline) | Real text, real data (the images go to the customer) |
+| Produces | A verdict (exit 0/1/2) | The PNG itself |
+
+So the two sides keep **two public commands and two contracts**, sharing only the bottom layer. The module exports six functions: STA check, freshness check, assembly probe registration, `Application` initialization plus resource dictionary loading, layout pump, and PNG rasterization.
+
+Two supporting rules:
+
+- **Don't "helpfully" unify the callers' parameters**: the layout pump's iteration count is **supplied by the caller**, because the two existing callers differ (one uses 3, the other 4). **The module has no right to change their output.**
+- **Fail loudly when the module is missing** (`Import-Module -ErrorAction Stop`), so the caller can classify it as "nothing was verified this run" (exit 2) rather than "the page is broken" (exit 1).
+
+---
+
+## Known Limitations
+
+Stated honestly, otherwise this post becomes a sales pitch:
+
+1. Fixed at 96 DPI; display scaling is not tested
+2. No host chrome (the outer frame and title bar are drawn by the host window)
+3. **It verifies display only, not interaction**: button clicks, input writing back to the ViewModel, and saving are all out of scope
+4. The "expanded" state of a dropdown can't be rendered (popups live in a different visual layer)
+5. `Compiled` mode instantiates the page by passing `null` to the constructor; if a page's constructor dereferences the model, that page can only use `XamlFile` mode
+6. The freshness gate only compares timestamps; it cannot prove the exe came from that source
+
+---
+
+## Closing
+
+Three takeaways:
+
+**"UI can't be tested" is usually a default assumption, not a fact.** Ask instead what the screen actually needs in order to be computed, and you often find that a window is just one item on that list — and the one item you can remove.
+
+**A test tool's value isn't whether it goes green; it's whether you dare believe it when it does.** The freshness gate, the data gate, the three-state exit code, and the negative-control self-test aren't buying coverage — they're buying trust.
+
+**The most dangerous thing when extracting a shared layer isn't duplicated code; it's quietly hoisting policy along with it.** Duplicated code is visible. A contract that got silently unified is not.

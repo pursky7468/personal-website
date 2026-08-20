@@ -1,0 +1,280 @@
+---
+title: "把 WPF UI 測試搬到沒有螢幕的地方：從一個抓不到的版面 bug 到一套敢信的驗證工具"
+date: 2026-08-20
+tags: ["WPF", "UI Testing", ".NET", "PowerShell", "CLR", "test-design"]
+summary: "一個編譯得過、單元測試全綠、肉眼看不出來的版面 bug，逼出一套離線算圖再量幾何的驗證法。但真正難的不是算圖，是防止假綠。"
+draft: false
+---
+
+## 起點：一個抓不到的版面 bug
+
+某個設定頁上有這樣一個 bug：
+
+- 一筆長字串（34 個中文字）把右側的 Value 欄推出可視區
+- 而水平捲軸被設成 `Hidden`，所以**捲不到**——那個欄位就是永久消失
+
+這個 bug 的討厭之處在於它躲過了所有既有防線：**編譯得過、單元測試全綠、肉眼在正常資料下也看不出來**。它只在特定資料長度下發生，而且發生的時候畫面看起來仍然很正常——只是少了一塊。
+
+唯一能抓到它的方法，是**真的把畫面算出來、量測幾何**。那次修完之後，我把當時的驗證方法固定成一支工具，而不是讓它留在我腦子裡。
+
+---
+
+## 核心洞見：WPF 的版面計算與光柵化不需要作業系統視窗
+
+這是整件事能成立的前提：**WPF 的 layout 與 rasterization 不需要 HWND**。
+
+可以載入編譯好的主程式組件、用**真的 BAML ＋ 真的樣式字典 ＋ 真的存檔資料**把畫面算出來存成 PNG，全程不開視窗、不會有任何東西出現在使用者螢幕上。
+
+要算出與真畫面一致的圖，只需要湊齊四樣材料：
+
+1. **編譯後的 BAML** —— `Assembly.LoadFrom(主程式 exe)` 之後反射實例化頁面型別
+2. **樣式字典** —— 必須用 `Application.LoadComponent` 載入
+3. **DataContext（真資料）** —— 從真實存檔的設定 json 餵進去
+4. **STA 執行緒**
+
+然後 `Measure` → `Arrange` → `UpdateLayout` → `RenderTargetBitmap.Render(visual)`。全程不需要 HWND。
+
+### 兩種算圖模式的保真度
+
+| 模式 | 讀什麼 | 用途 |
+|---|---|---|
+| `Compiled`（預設） | 反射實例化頁面型別 → 載入編譯後的真 BAML | 正式驗收，需要先 build |
+| `XamlFile` | 直接解析 `.xaml`（根元素換成 `Grid`、localization 標記換成字面字串） | 不想 build 就先看一眼 |
+
+兩模式的差異我用逐像素比對量化過：**1,908,000 個像素只差 3 個**——差在一個字的反鋸齒。
+
+---
+
+## 真正的敵人不是算圖，是「假綠」
+
+工具能算圖之後，最大的敵人就換人了。不是「算不出來」，是「測試通過但其實什麼都沒驗到」。
+
+兩條假綠路徑都是實測出來的，不是想像的：
+
+| 情境 | 沒有閘門時 | 有閘門時 |
+|---|---|---|
+| 改了 xaml 但忘記 build（實驗性注入 `MinWidth="3000"`） | **23 PASS / 0 FAIL / exit 0**，截圖看起來完美 | freshness gate 擋下，exit 2 |
+| fixture 宣告的設定檔路徑不存在 | 算圖引擎**靜默跳過**、用空資料算圖，控制項 24→10，**幾何斷言全 PASS** | 資料 gate 擋下，exit 2 |
+
+第一列特別致命。因為靜態檢查**不看任何數值**（寬度、Margin、MinWidth），所以純數值造成的傷害沒有任何一層攔得住；更糟的是，那張滿分截圖會被 commit 進版控，變成一份永久的錯誤證據。
+
+於是我把「rebuild → 確認 build 真的發生 → 跑測試」設計成**一個指令、一件事**，而不是三件可以自由排列組合的事，並提供一支 runner 當作唯一正確入口：
+
+- **freshness gate** —— `.xaml` 比編譯出來的組件新就直接擋。理由：`Compiled` 模式量的是編譯後的 BAML，源碼比它新代表你在評分舊版本。
+- **資料 gate** —— fixture 宣告了設定檔但檔案不存在就直接擋。
+
+freshness gate 有一個必須誠實講出來的限制：它**只比時間戳**，證明不了 exe 真的是那份原始碼編出來的。改完又改回去、或從別處複製一份 exe 過來，都騙得過它。
+
+---
+
+## exit code 三態契約
+
+這是整個設計裡我最想單獨拿出來講的一點。
+
+- `0` = 建置乾淨且全部斷言通過
+- `1` = **頁面**有問題
+- `2` = 這次執行**不算數**——建置失敗、前置條件不滿足、工具自己錯誤。不是「有 bug」，是「什麼都沒驗到」
+
+大部分測試工具只有 0/1 兩態。這個設計上的缺口會逼出一個很糟的結果：**「工具自己壞了」被迫偽裝成「受測物壞了」**。
+
+我實際踩過這個坑。呼叫子行程時參數陣列沒有逐一加引號，含空白的路徑被拆成位置參數，算圖引擎直接死掉——這件事原本被算成「一條算圖斷言失敗」，於是回 `exit 1`，讀起來是「頁面壞了」，但真相是工具壞了。
+
+修正後的契約很簡單：引擎自己拋錯一律回 `exit 2`，`exit 1` 只保留給「頁面真的有問題」。
+
+---
+
+## 它到底檢查什麼
+
+**靜態檢查**（讀 `.xaml` 原始碼，不需要 build）：
+
+| id | 檢查 |
+|---|---|
+| `S1.xml` | XML 格式正確（標籤閉合、屬性語法） |
+| `S2.encoding` | UTF-8 **with BOM** 且純 CRLF（被腳本重寫過的檔案常掉這兩個） |
+| `S3.uniformgrid` | 沒有 `UniformGrid` 宣告的格數 ≠ 實際子元素數（多宣告的欄是死區） |
+| `S4.unbounded-measure` | **原始 bug 的類別**：`HorizontalScrollBarVisibility` 是 `Hidden`/`Auto`/`Visible` 的 `ScrollViewer` 內含 `UniformGrid` 或星號欄，且沒有把內容寬度釘在 `ViewportWidth` 上 → 欄寬會跟著內容長，而不是跟著可視區 |
+| `S5.resources` | 每個 `{StaticResource X}` 的 key 都找得到 |
+| `S6.*` | 專案自訂的版面房規（共用標頭、外殼與內層面板的色碼與圓角），由 fixture 宣告 |
+| `S7.*` | 每頁自訂的靜默破壞不變量（例：`UpdateSourceTrigger=Explicit` 的數量——少一個就會有欄位不寫回 ViewModel） |
+| `S8.parity` | 表頭 Grid 與資料列 Grid 的欄定義必須逐欄相同（否則表頭與資料錯位） |
+
+**算圖 + 幾何檢查**（載入真實樣式與真實資料後量測）：
+
+| id | 檢查 |
+|---|---|
+| `R.render@<寬度>` | 在每個宿主寬度算圖成功並存出 PNG |
+| `G1.inbounds@<寬度>` | 每個可見控制項都完整落在頁面範圍內（**這條就是原始 bug 的自動偵測**） |
+| `G2.overlap@<寬度>` | 同一個 Grid、同一列、不同欄的控制項不得重疊 |
+| `G3.nonzero@<寬度>` | 沒有可見控制項被壓成 0 寬 |
+
+幾何檢查會在多個宿主寬度下重跑：最寬、中等、以及宿主容許的最小寬。
+
+**fixture 是一份 JSON**，宣告頁面型別、ViewModel 型別、xaml 路徑、組件路徑、真實設定檔路徑、要測的寬度陣列，以及選填的房規與不變量。路徑一律寫成相對於 repo 根（工具自己往上找 `.sln` 定位），**不寫死機器路徑**。
+
+---
+
+## 檢查器自己也要被檢查
+
+> 只會變綠的檢查器沒有價值。
+
+所以我把**修復前的原始 xaml** 永久保留在 `test-assets/` 裡當反向對照。自我測試必須同時拿到這三個結果：
+
+| case | exit | 統計 |
+|---|---|---|
+| 負對照（修復前的 xaml） | 1 | 14 PASS / 42 FAIL |
+| 現行 xaml，`XamlFile` 模式 | 0 | 23 PASS / 0 FAIL |
+| 現行 xaml，`Compiled` 模式 | 0 | 23 PASS / 0 FAIL |
+
+任何一項不符 = **檢查器壞了，不是頁面壞了**。
+
+**為什麼兩種模式都要跑**：後面「地雷 1」那個 bug **只在 `Compiled` 模式現形**。`XamlFile` 模式會先把 localization 標記換成字面字串，根本不會去載那顆會炸的組件，所以它全綠不代表沒事。**只跑一種模式驗不出這個 bug。**
+
+**檢查器自己也會壞，這真的發生過**：色數檢查第一版直接對元素做 `RenderTargetBitmap.Render`，但它會套用該元素的 `TranslateTransform`，於是算到空白處 → 誤報「整塊只有 1 色」。修法是量測前把 `RenderTransform` 暫設 `Identity`、量完還原。教訓很簡單：**檢查器喊異常時，先確認壞的是檢查器還是產物。**
+
+色數檢查本身也有誠實的限制：它只證明「這塊不是純色」。背景＋邊框＋文字＋接點＋反鋸齒本來就湊得出 8 色以上，所以圖示空白時它仍可能過關。要真的確定圖有畫出來，就把該區域裁切放大讀回一次。
+
+---
+
+## 五個「不報錯、但圖是錯的」坑
+
+這五個坑的共同特徵是：**腳本 exit 0、PNG 也產出來了，只是內容是錯的。**
+
+### 坑 1：localization 標記算成 `Key: <resource key>`
+
+localization provider 的 `DefaultAssembly` / `DefaultDictionary` 掛在**宿主視窗**上，單獨算一頁不會繼承。
+
+修法：設 `LocalizeDictionary.Instance.Culture`，並把 provider 的 default assembly / dictionary 掛到算圖的根節點。
+
+### 坑 2：`Loaded` 事件永遠不會觸發（最容易中）
+
+離線算圖的 visual **從未掛上 `PresentationSource`**，所以 `Loaded` 不會發生。凡是在 `Loaded` 裡才設 DataContext 的頁面或控制項，就會**整個畫不出來**——而 **layout 尺寸照樣正常**（實測 78×78），所以「零尺寸」那條檢查抓不到它。
+
+實測數字：流程圖畫布上 **211 顆元件裡有 64 顆中招**（有自己 xaml 的那些）；用通用 view、在建構子設 DataContext 的那些沒事。
+
+**要支援新畫面時，第一件事就是 grep 目標 xaml 有沒有 `Loaded=`。**
+
+### 坑 3：圖示全部不見
+
+`Icon` 屬性標了 `[JsonIgnore]`，所以它永遠不在存檔 json 裡。真流程是在載入時依名稱去一份工具清單裡補（查無則退回預設圖）。
+
+修法：建構元件之前先呼叫那個補圖示的方法（private，要反射）。
+
+### 坑 4：ID 全印成 0
+
+ID 的 setter 第一行是 `if (_idPool.Count == 0) return;`——**無聲吞掉指派**，連 Json.NET 反序列化寫進去的都被丟掉。`_idPool` 是 `internal static`，真流程在載入時才種下。
+
+修法：反序列化**之前**先反射給它補一個元素。
+
+### 坑 5：連線沒建 → 整張圖看起來全斷線
+
+只塞元件不建線段物件，**每一條線都不會出現**。孤立的元件看起來沒問題，但有連線的鄰居會被誤讀成斷線。
+
+另外**要先 layout 再建線**：端點座標的 getter 會判 `this.ActualHeight != 0`，沒 layout 過就走零尺寸分支。
+
+### 每次產圖後必看的數字
+
+腳本自己印，任一項不對就 throw：
+
+- `元件 added / failed`（failed 必須 0）
+- `drawn with ID<=0`（0）
+- `DataContext supplied for N`（N 大代表確實中了坑 2）
+- `no icon`（0）
+- `focus 區域相異色數`（≥8，實測正常 62）
+- `zero rendered size`（0）
+- `lines connected / failed`（failed 0）
+- `out-of-range edges`（0）
+
+---
+
+## CLR / PowerShell 地雷
+
+這段是給實作者的。以下四個是我覺得最有普遍價值的。
+
+### 地雷 1：`AssemblyResolve` handler 不可以引用函式區域變數
+
+那個 scriptblock 是**在註冊它的函式回傳很久以後**才被 CLR 呼叫。當時捕捉的函式區域變數已經不在，handler 於是**靜靜地跑完空迴圈回 `$null`**，症狀是 `Could not load file or assembly '<某個相依組件>'`。
+
+修法：探測路徑要放在**模組層**（`$script:ProbeDirs`），或用 `GetNewClosure()`。
+
+### 地雷 2：`AssemblyResolve` handler 不可以用 PowerShell ScriptBlock（會 StackOverflow）
+
+這條的因果鏈值得完整讀一次：
+
+```text
+設 LocalizeDictionary.Culture
+↓
+改寫 Thread.CurrentUICulture
+↓
+CLR 去找 PowerShell 自己的 satellite resources 組件
+↓
+觸發 AssemblyResolve
+↓
+用 ScriptBlock 回答 ⇒ 要跑 PowerShell（Join-Path / Test-Path 是 cmdlet，需要命令探索）
+↓
+又需要同一個 satellite 組件
+↓
+無限遞迴 ⇒ StackOverflow
+```
+
+而 **StackOverflow 抓不到**：行程直接消失、沒有錯誤訊息，看起來就像「工具沒反應」。
+
+修法：改用 `Add-Type` 編譯的 C# handler。**不要在 handler 裡放任何 cmdlet。**
+
+### 地雷 3：一個 process 只能跑一次 WPF
+
+`Application` 每個 AppDomain 只能有一個，且執行緒結束後 Dispatcher 永久關閉。所以算圖引擎**必須**以獨立的 `powershell.exe -STA` 子行程執行；在同一個 process 內跑第二次會得到 `PresentationFramework ... E_POINTER`。
+
+### 地雷 4：`GetUninitializedObject` 的正確判準
+
+`FormatterServices.GetUninitializedObject` **配置物件但不執行建構子**，可以繞過「這個 ViewModel 的建構子會把整個 app 開起來」這種死路——接著只要把目標畫面**真正會走到**的成員用反射填進去就夠了。
+
+但這招**只對「資料容器」安全**。對 WPF 控制項用它會壞：跳過 `FrameworkElement` 建構子之後，`InitializeComponent()` 會拋 `XamlParseException: Current local value enumeration is outdated`。
+
+所以判準是**「這個型別是不是資料容器」**，不是「它的建構子重不重」。
+
+---
+
+## 抽出共用底層時的架構紀律
+
+這套機制後來同時被兩個用途需要：**UI 迴歸測試**，以及**產出交付給客戶的手冊截圖**。機制原本被抄在四支腳本裡，於是抽成唯一一份共用模組。
+
+抽出時定下的規矩只有一條：**模組裡沒有任何 policy**。沒有判決、沒有 exit code、沒有 localization、沒有資料選取、沒有裁切、沒有斷言。
+
+這不是「還沒做」，是**不能做**——兩個呼叫端要的東西正好相反：
+
+| | 迴歸測試 | 交付截圖 |
+|---|---|---|
+| 要什麼 | 未 localize、不選任何一列的頁面（跑幾次都一樣，才能當回歸基準） | 真的字、真的資料（圖要交給客戶） |
+| 產出 | 判決（exit 0/1/2） | PNG 本身 |
+
+所以兩邊維持**兩個 public command、兩套契約**，只共用最底下那層。模組匯出六個函式：STA 檢查、freshness 檢查、組件探測器註冊、`Application` 初始化與樣式字典載入、layout pump、PNG 光柵化。
+
+兩個附帶紀律：
+
+- **不要「順手」統一呼叫端的參數**：layout pump 的迭代次數是**呼叫端給的**，因為現有兩邊不一樣（一邊 3、一邊 4）。**模組沒有資格改變它們的輸出。**
+- **模組不見時要大聲失敗**（`Import-Module -ErrorAction Stop`）：讓呼叫端能把它歸類成「這次什麼都沒驗到」（exit 2），而不是「頁面壞了」（exit 1）。
+
+---
+
+## 已知限制
+
+誠實列出，不然這篇文章就變成推銷：
+
+1. 固定 96 DPI，不測螢幕縮放
+2. 不含 host chrome（外框、標題列由宿主視窗畫）
+3. **只驗顯示，不驗互動**：按鈕點下去、輸入寫回 ViewModel、存檔，都不在範圍內
+4. 下拉選單「展開後」的樣子算不出來（popup 在另一個視覺層）
+5. `Compiled` 模式用建構子傳 `null` 實例化頁面；若某頁的建構子會對 model 解參考，該頁只能用 `XamlFile` 模式
+6. freshness gate 只比時間戳，證明不了 exe 是那份原始碼編出來的
+
+---
+
+## 收尾
+
+三個帶得走的觀點：
+
+**「UI 測不了」常常是預設值，不是事實。** 先問「畫面到底需要什麼才算得出來」，往往會發現視窗只是其中一項，而且是可以拿掉的那一項。
+
+**一個測試工具的價值不在於它會不會變綠，而在於它變綠的時候你敢不敢信。** freshness gate、資料 gate、exit code 三態、負對照自我測試——這四件事都不是在買覆蓋率，是在買「敢信」。
+
+**抽共用層時最危險的不是抄重複，是順手把 policy 一起抽上去。** 重複的程式碼看得見，被偷偷統一掉的契約看不見。
