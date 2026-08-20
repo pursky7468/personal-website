@@ -279,3 +279,36 @@ Three takeaways:
 **A test tool's value isn't whether it goes green; it's whether you dare believe it when it does.** The freshness gate, the data gate, the three-state exit code, and the negative-control self-test aren't buying coverage — they're buying trust.
 
 **The most dangerous thing when extracting a shared layer isn't duplicated code; it's quietly hoisting policy along with it.** Duplicated code is visible. A contract that got silently unified is not.
+
+---
+
+## A working implementation
+
+The above is methodology. I later rewrote the approach **from scratch** as something I can
+publish:
+
+**[pursky7468/wpf-headless-uitest](https://github.com/pursky7468/wpf-headless-uitest)**
+
+To be precise about what that is: **it is not the tool described in this post.** That one was
+written for a specific product during employment and stays private. The public one is an
+independent clean-room rewrite — the design was written as specifications before any
+implementation existed, and it contains no line of the original. Methods and ideas aren't
+protected by copyright; expression is, and this expression is new.
+
+It does what the article describes: offline rendering, geometry assertions, the three-state
+exit code, the freshness and data gates, and a permanently kept negative control. The bundled
+sample app ships the same settings page in a working and a broken variant — and that defect is
+**completely invisible at 900px and 700px, overflowing by only 38.4px at 520px**, which is
+exactly the "you cannot see it by looking" problem this post opens with.
+
+Two things there that aren't in this article, because they came later:
+
+- **Virtualising panels are a third false-green path.** A `VirtualizingStackPanel` only
+  realises items inside the viewport, so a defect on row 100 isn't in the visual tree at all
+  and every geometry check passes. A cross-model review raised this one; I had missed it.
+- **The judgement should be "unreachable", not "out of bounds".** Content you can scroll to
+  hasn't disappeared, and text deliberately trimmed with an ellipsis is a layout decision.
+  Neither is a bug, and reporting them as failures only teaches people to distrust the tool.
+
+The full set of trade-offs is in `decisions/`, including the suggestions that were not adopted
+and why.
