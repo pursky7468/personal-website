@@ -25,7 +25,11 @@ Steve Lin 的個人網站，定位為「作品展示 + 技術筆記」。
 | Styling    | Tailwind CSS + shadcn/ui   | 快速、一致的 UI                      |
 | Content    | Contentlayer + MDX         | Blog/Project 頁面 type-safe 管理     |
 | Animation  | Framer Motion              | 輕量 section fade-in                |
-| Deployment | Vercel                     | Zero-config，free tier              |
+| Deployment | Vercel                     | 見 `decisions/002`（非零成本可替換）  |
+
+> 部署選項不是可自由替換的：`next.config.mjs` 的 `headers()` 與 `src/middleware.ts`
+> 都需要 request-time runtime，純靜態託管（如 GitHub Pages）無法承載。
+> 完整分析與遷移代價見 `decisions/002-hosting-vercel-over-github-pages.md`。
 
 ---
 
