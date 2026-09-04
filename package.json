@@ -10,7 +10,9 @@
     "test": "playwright test",
     "test:ui": "playwright test --ui",
     "verify": "node scripts/verify-layout.js",
-    "lhci": "lhci autorun"
+    "lhci": "lhci autorun",
+    "verify:claims": "node scripts/verify-claims.js",
+    "verify:claims:all": "node scripts/verify-claims.js --all"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",
