@@ -1,0 +1,219 @@
+---
+title: "為什麼我沒照抄那個 3,000 star 的 NotebookLM 方案"
+date: 2026-09-04
+tags: [NotebookLM, LLM, AI, MCP, RAG, Automation, Decision-Making]
+summary: "記錄評估 NotebookLM 自動化方案時排除各選項的判斷過程：為何最高星數的專案已經停滯、官方免費方案條款方向相反、以及為何最終選 CLI 而非 MCP。"
+draft: false
+---
+
+起點很單純：我有一些大型文件、錄音和影片，想先做重點彙整再交給 Claude 處理，省 token。
+
+NotebookLM 在大型多來源彙整上的品質明顯比一次性餵檔給 LLM 好。差別不在模型 —— NotebookLM 後端本來就是 Gemini —— 而在它的 RAG 檢索層：語料庫可以超過 context window、能跨文件綜合、每個結論標得回原文。
+
+問題是它沒有官方 API。
+
+---
+
+## 第一次調查：star 最高的那個已經死了
+
+搜下去有三個主要候選：
+
+| 專案 | Stars | 最後 push |
+|---|---|---|
+| teng-lin/notebooklm-py | 19,000+ | 當天 |
+| PleasePrompto/notebooklm-mcp | 3,300+ | 2026-05-01 |
+| roomi-fields/notebooklm-mcp | 170 | 2026-08 |
+
+npm 上搜「notebooklm」有 108 個套件。這個生態不小。
+
+第二個是 npm 上 `notebooklm-mcp` 對應的專案，star 數在 MCP 類裡最高，直覺會先拿它。但最後 commit 停在 5 月 —— **早於 Google 在 2026-07-16 把 NotebookLM 改名為 Gemini Notebook 的那次事件**。
+
+改名之後，網域從 `notebooklm.google.com` 轉到 `notebook.google.com`。那個專案的登入流程還在等舊網域，於是 `setup_auth` 永遠回報未登入。修復 PR 開了一個月沒 merge。
+
+**它用的是 Patchright 瀏覽器自動化。** 同一次改名，走逆向 RPC 的 `notebooklm-py` 毫髮無傷。
+
+這是我後面所有判斷的第一塊拼圖。
+
+---
+
+## 繞路一：官方免費方案，方向是相反的
+
+在決定用非官方方案之前，我先確認官方路走不走得通。
+
+Google 確實有官方的 managed RAG —— Gemini API 的 **File Search**，GA 狀態，免費 API key 就能用，索引和查詢的 embedding 都免費，而且支援引用溯源。
+
+看起來是正解。直到我去讀條款。
+
+`ai.google.dev/gemini-api/terms` 原文：
+
+> When you use **Unpaid Services**... Google uses the content you submit **to provide, improve, and develop Google products and services and machine learning technologies**...
+>
+> To help with quality and improve our products, **human reviewers may read, annotate, and process your API input and output.**
+>
+> **Do not submit sensitive, confidential, or personal information** to the Unpaid Services.
+
+而 NotebookLM 消費者版的官方說明頁（`support.google.com/notebooklm/answer/16164461`）：
+
+> Your data is protected, and is **not used to train Gemini Notebook unless you provide feedback.**
+
+**方向完全相反。** 官方免費 API 更穩定，但要你交出文件去訓練，而且明文叫你不要提交機密內容。非官方路線資料不外流，但會壞。
+
+我要處理的是自己的非公開文件，所以隱私權重高於穩定性。
+
+順帶一提，免費 tier 的 File Search 語料庫上限只有 1 GB，而且**明文不支援音訊影片索引**。就算條款沒問題，我的用途也裝不下。
+
+---
+
+## 繞路二：那我自己做瀏覽器自動化呢？
+
+既然逆向 API 會壞，直覺會想：那我開個真的 Chrome，跑固定腳本，甚至存一張 golden 截圖比對版面有沒有跑掉，不就好了？
+
+我認真評估過。結論是**更糟**，而且理由不只一個。
+
+**第一，ToS 上不豁免。** Google 條款約束的字眼是 "using **automated means** to access content" —— 約束的是自動化本身，不是傳輸方式。用 Playwright 驅動真 Chrome 一樣是 automated means。
+
+**第二，UI 比內部 API 更容易壞。** 這點反直覺，但有結構性原因：
+
+| | 內部 RPC | 前端 UI |
+|---|---|---|
+| 誰依賴它 | Google 自己所有客戶端 | 只有畫面 |
+| 改動成本 | 高 | 低 |
+| 識別方式 | 固定的 rpc id | 每次部署都會變的生成式 class name |
+
+而且我上面已經有實證了：那個 3,300 star 的專案就是被瀏覽器自動化拖死的。
+
+**第三，golden image 比對解決不了問題。** 它能告訴你「畫面變了」，但不會告訴你怎麼修；A/B test、字型渲染、串流中的回答文字都會讓 diff 亮紅燈；而聊天回應是逐字串流出現的，截圖時機不同結果就不同。你會多養一套本身也會腐化的維護工作。
+
+**第四，用 F12 讀內容會繞回原點。** 腳本能用的是 CDP（Chrome DevTools Protocol）。如果用它去攔網路回應，攔到的就是同一批 `batchexecute` 回應 —— 你還是得解那個未公開的格式，外加養一個瀏覽器。嚴格劣於直接打。
+
+---
+
+## 那實際上是怎麼運作的？
+
+底層打的是這個：
+
+```text
+POST https://notebook.google.com/_/LabsTailwindUi/data/batchexecute
+       ?rpcids=<6碼方法代號>&f.sid=<session>&rt=c
+
+body:   f.req=<URL-encoded 三層巢狀陣列>&at=<CSRF token>
+cookie: 你的 Google session
+```
+
+`batchexecute` 是 Google 所有網頁應用共用的內部 RPC 傳輸層，Docs、Photos、Drive 都在用。`LabsTailwindUi` 是 NotebookLM 前端模組的內部名稱（Tailwind 是它的專案代號）。
+
+那些六碼字串是混淆過的方法名，上游作者是開著 DevTools 看網頁在打什麼，把對應關係抄下來，自己刻了一份編碼解碼器。
+
+**所以精確地說，這不是破解，是把你瀏覽器本來就在發的請求改用腳本發。** 同一個帳號、同一份資料、同一個端點，認證方式一模一樣。沒有取得任何你原本無權存取的東西，也沒有繞過任何防護機制。
+
+差別只在發請求的是腳本而不是瀏覽器。
+
+---
+
+## 定案：用它的 CLI，不用它的 MCP
+
+`notebooklm-py` 一個套件提供三個進入點：
+
+```text
+notebooklm          CLI          ┐
+notebooklm-mcp      MCP server   ├─ 共用同一個 NotebookLMClient
+notebooklm(Python library)      ┘
+```
+
+生態裡幾乎所有專案都在做 MCP server —— 把 NotebookLM 接進你的 AI 助手。我一開始也裝了。
+
+**但我要的是一個排程跑的 bot，不是對話工具。** MCP 的形式必然把模型放進迴圈：每次上傳、每次提問都要模型參與，都在燒 token。而我的整個目的就是省 token。
+
+我後來把 MCP 註冊移除了，理由是實測出來的：
+
+- **對話延續不需要 MCP。** 我原本以為只有 MCP 能做互動追問。實測兩個完全獨立的行程呼叫 `notebooklm ask`，回傳同一個 `conversation_id`，`turn_number` 從 11 遞增到 12，而且第二次問「你剛剛列的第二種模式有什麼風險」被正確解析。**對話狀態在 NotebookLM 伺服器端，不在 client 行程裡。**
+- **MCP 沒給任何 CLI 做不到的事**，卻要 33 個 tool schema 常駐在 context。
+- **MCP server 啟動就會 `RotateCookies`**，會跟 CLI 搶憑證輪替。這不是理論 —— 我診斷它連線問題時反覆啟動又中途 kill，把 CLI 的憑證一起弄壞了。
+
+同樣的判斷也套用在資料來源上。我另一個專案有 MCP server 供查詢 AI 新聞，但它的 tool 全是普通 Python 函式加 `@mcp.tool()` 裝飾器 —— **直接 `import` 呼叫，輸出跟走 MCP 協定逐字相同，但零 token。**
+
+所以最終的組合是：
+
+```text
+上游的逆向 CLI(別人做的,MIT)
+        ↓
+我的確定性包裝層(PowerShell,零 LLM)
+        ↓
+agent 只在兩個點介入:決定問什麼 / 壞掉時修
+```
+
+---
+
+## 幾個只有踩下去才會知道的坑
+
+### 上傳成功不等於可用
+
+`source add` 回傳成功時，音訊還在轉錄。40 分鐘的節目上傳只要幾秒，之後會停在 `preparing` 一分鐘以上。
+
+排程如果 ingest 完立刻 digest，會問到空的來源。後來加了 `-Wait` 輪詢到全部 ready 才回傳。
+
+### 而且「全部 ready」我第一次也寫錯了
+
+我的判定寫 `status -eq 'failed'`，但上游實際用的字串是 `'error'`。結果 notebook 裡明明有一筆壞掉的來源，它還是印「All sources ready」然後回傳成功 —— **正是這個功能該防止的靜默成功。**
+
+### 憑證的壽命很奇怪
+
+解開憑證檔逐欄看到期時間：
+
+```text
+__Secure-1PSIDRTS   剩 0.2 小時(約 12 分鐘)  ← 輪替 token
+__Secure-1PSIDTS    剩 8760 小時
+SAPISID / SID       剩 9555 小時
+```
+
+那個 12 分鐘的輪替 token 錯過續期就會整組脫鉤。而且**輪替會使前一個 token 失效** —— 兩個行程同時跑就有一個被踢掉。我在一個工作階段內把憑證弄失效三次，全都發生在並行呼叫期間。
+
+好消息是：`notebooklm login` 在瀏覽器 profile 的 Google session 還有效時**是完全非互動的**，直接重新匯出 cookie。所以排程可以在開頭做健檢、失效時自己救回來，不需要人。
+
+### 我自己弄壞的那次
+
+我想「加固一下憑證檔權限」，跑了：
+
+```powershell
+icacls ~/.notebooklm /inheritance:r /grant:r "User:(OI)(CI)F" /T
+```
+
+`(OI)(CI)` 是**繼承旗標**，只對目錄有意義。用 `/T` 套到葉節點檔案時產生的是「只供繼承」的 ACE，對檔案本身不授予任何權限；`/inheritance:r` 又把繼承來的移掉 —— 檔案變成零授權，連擁有者都讀不到。
+
+然後因為讀寫都被擋，cookie 輪替寫不回去，憑證跟著過期。
+
+**而我當時只驗了目錄的 ACL 就宣告完成，沒驗檔案。** 這個加固後來整個回退了：它在單人機器上本來就擋不住以自己身分執行的程序，價值低，而破壞性已經證實。真正有效的防線是版本凍結 —— 把套件鎖在特定版本，不讓它每次啟動從 PyPI 抓未審查的新程式碼。
+
+### 一個關於「省 token」的反諷
+
+NotebookLM 預設回答很長。四個問題產出 50,791 bytes，而我的目的是省 token。
+
+加了一個附帶簡潔指令的 `-Brief` 模式後降到 2,379 bytes，21 倍。但代價是引用溯源會不見 —— 我一度以為是必然的，後來在另一個 notebook 上測又正常回傳引用。所以最後文件寫的是「不保證存在」，而不是我原本斷言的「必然失去」。
+
+**推翻自己前一個結論，比堅持它有用。**
+
+---
+
+## 誠實的結論
+
+程式碼本身沒什麼特別。逆向工程不是我做的，CLI 不是我做的，包裝腳本任何人半天能寫，而且它是 Windows PowerShell 專用 —— 對多數人是負分。
+
+有價值的是**判斷的軌跡**：
+
+- 為什麼 star 最高的方案不能用（它已經死了，而且是死於它選的機制）
+- 為什麼官方免費方案反而不行（條款方向相反）
+- 為什麼不自己做瀏覽器自動化（更脆弱，有實證）
+- 為什麼用 CLI 不用 MCP（模型在迴圈裡 = 燒 token，而 MCP 沒給額外能力）
+
+以及那幾條把東西弄壞才會知道的事實。
+
+**選型的價值不在選了什麼，在於排除了什麼、以及排除的理由站不站得住。**
+
+---
+
+程式碼、完整的實測紀錄與取捨文件在這裡：
+**https://github.com/pursky7468/notebooklm-toolkit**
+
+需要先說清楚的兩件事：這個工具依賴非官方逆向套件，Google 改版就可能失效；它的憑證是完整的 Google 帳號 session，存成明文而且會繞過 2FA，**建議用次要帳號**。README 開頭有完整的風險說明。
+
+repo 裡真正值得看的是 `VERIFY.md`（每一項實測與踩到的坑）和 `decisions/`（為什麼這樣選）。腳本只是佐證。
