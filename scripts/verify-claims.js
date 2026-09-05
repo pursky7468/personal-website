@@ -30,7 +30,7 @@ const RISKY = [
   // English equivalents. Without these an .en post trivially passes, which
   // is a false pass, not a clean bill of health.
   { re: /the (real )?difference is|the reason is|comes down to|under the hood|is powered by|boils down to/i, kind: 'causal/mechanism' },
-  { re: /(always|never|inevitably|by definition|guaranteed to|all of them|every single)/i, kind: 'absolute' },
+  { re: /\b(always|never|inevitably|by definition|guaranteed to|all of them|every single)\b/i, kind: 'absolute' },
   { re: /better than|outperforms|superior to|the best (way|option|tool)|far (faster|slower) than/i, kind: 'comparison' },
   { re: /the author (must have|probably|likely)|they (built|did|made) it by/i, kind: 'others intent' },
 ]
@@ -43,11 +43,20 @@ const EVIDENCE = [
   /查證|官方(文件|說明|條款|頁|說法)|引用原文|原文寫|原文如下|條款(寫|明文)|文件寫|明文規定|明文不支援|明文表示/,
   /主觀|使用印象|沒有做過對照|未做對照|不是量測|個人偏好/,
   /推論|推測|猜的|猜測|我不知道|未(經)?驗證|不確定|沒有(逐一)?查證|無從得知|不敢斷言/,
-  /I (tested|measured|verified|ran|benchmarked)|in my test|measured at/i,
+  /\bI (tested|measured|verified|ran|benchmarked)\b|in my test|measured at/i,
   /official (docs|documentation|terms|page)|per the (docs|terms)|the terms (say|state)|verbatim|quoted/i,
   /subjective|my impression|no controlled|did ?n[o']?t compare|anecdotal|not a benchmark/i,
-  /I (think|suspect|guess|assume)|inference|speculation|I do ?n[o']?t know|unverified|not verified|my guess/i,
+  /\bI (think|suspect|guess|assume)\b|inference|speculation|I do ?n[o']?t know|unverified|not verified|my guess/i,
 ]
+
+// Superlatives compressed into a heading or a conclusion bullet are where
+// qualifiers go missing. A heading that says "the highest-star one died" while
+// the table right under it shows that project alive is not an evidence-level
+// problem -- it is an internal contradiction, and the evidence check above
+// cannot see it. Flag them so a human cross-checks against the article's own
+// numbers.
+const SUPERLATIVE = /最高|最多|最大|最好|最快|最穩|最強|唯一|\bthe (most|best|largest|fastest|only)\b/i
+const CONSISTENCY_OK = /\{\/\*\s*consistency-ok/
 
 const OVERRIDE = /\{\/\*\s*claims-ok/
 
@@ -108,15 +117,48 @@ function checkFile (file, opts = {}) {
       }
     }
   }
-  return { file, paras: paras.length, findings }
+  // Headings and conclusion bullets are the compression points.
+  const supers = []
+  const inConclusion = (idx) => {
+    for (let k = idx; k >= 0; k--) {
+      const m = lines[k].match(/^##\s+(.*)$/)
+      if (m) return /結論|總結|Conclusion|Takeaway/i.test(m[1])
+    }
+    return false
+  }
+  lines.forEach((line, idx) => {
+    const isHeading = /^#{2,4}\s/.test(line)
+    const isBullet = /^\s*[-*]\s/.test(line)
+    if (!isHeading && !(isBullet && inConclusion(idx))) return
+    const m = line.match(SUPERLATIVE)
+    if (m && !CONSISTENCY_OK.test(line)) {
+      supers.push({ n: idx + 1, hit: m[0], text: line.trim(), where: isHeading ? '標題' : '結論條列' })
+    }
+  })
+
+  return { file, paras: paras.length, findings, supers }
 }
 
 function report (res) {
   console.log(`Claims check: ${res.file}`)
   console.log(`  paragraphs: ${res.paras}`)
-  if (res.findings.length === 0) {
+  const supers = res.supers || []
+  if (supers.length) {
+    console.log(NEWLINE + `${supers.length} 個最高級用語需人工核對：`)
+    for (const s of supers) {
+      console.log(`  L${s.n}  [${s.where}] 命中「${s.hit}」`)
+      console.log(`        ${s.text.slice(0, 120)}`)
+    }
+    console.log('  → 回頭核對文中的表格與數字；確認無誤後加 {/* consistency-ok */}')
+  }
+
+  if (res.findings.length === 0 && supers.length === 0) {
     console.log(NEWLINE + 'PASS — every flagged claim carries an evidence marker.')
     return 0
+  }
+  if (res.findings.length === 0) {
+    console.log(NEWLINE + 'FAIL — 最高級用語尚未核對（見 content/blog/CLAUDE.md「內部一致性」）')
+    return 1
   }
   console.log(NEWLINE + `${res.findings.length} unmarked claim(s):` + NEWLINE)
   for (const f of res.findings) {
@@ -141,9 +183,14 @@ function main () {
     let failed = 0
     for (const f of posts) {
       const res = checkFile(path.join(dir, f))
-      const tag = res.findings.length ? 'FAIL' : 'pass'
-      console.log(`  [${tag}] ${f}` + (res.findings.length ? `  (${res.findings.length} unmarked)` : ''))
-      if (res.findings.length) failed++
+      const nS = (res.supers || []).length
+      const bad = res.findings.length + nS
+      const tag = bad ? 'FAIL' : 'pass'
+      const detail = bad
+        ? `  (${res.findings.length} unmarked, ${nS} superlative)`
+        : ''
+      console.log(`  [${tag}] ${f}${detail}`)
+      if (bad) failed++
     }
     console.log(NEWLINE + `${posts.length} post(s), ${failed} with unmarked claims.`)
     process.exit(failed ? 1 : 0)
