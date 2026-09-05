@@ -21,6 +21,47 @@ const os = require('os')
 
 const LOCAL_BASE = 'http://localhost:3001'
 
+const { execSync } = require('child_process')
+
+// A structural PASS against a stale deployment is a false pass -- it reports
+// that the page renders, not that it renders YOUR change. This bit twice:
+// once by checking 42s after a push (deploy needs ~90s), and once when Vercel
+// silently created no deployment at all for a pushed commit. Both times every
+// check below reported PASS against the previous version.
+//
+// Best effort: if git or gh is unavailable, warn and continue rather than
+// blocking a run that may still be useful.
+function checkDeployedRevision () {
+  let head, deployed
+  try {
+    head = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim().slice(0, 7)
+  } catch {
+    console.log('  [warn] git unavailable; cannot confirm which revision is deployed.')
+    return
+  }
+  try {
+    deployed = execSync(
+      'gh api "repos/:owner/:repo/deployments?per_page=1" --jq ".[0].sha"',
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim().slice(0, 7)
+  } catch {
+    console.log('  [warn] gh unavailable; cannot confirm which revision is deployed.')
+    return
+  }
+  if (!deployed) {
+    console.log('  [warn] no deployment found for this repo.')
+    return
+  }
+  if (deployed !== head) {
+    console.error(`  [FAIL] Deployed revision ${deployed} != local HEAD ${head}.`)
+    console.error('         The live site is not serving your latest commit, so every')
+    console.error('         result below would describe a different version.')
+    console.error('         Wait for the deploy or re-trigger it, then re-run.')
+    process.exit(1)
+  }
+  console.log(`  [PASS] Deployed revision matches local HEAD (${head})`)
+}
+
 function loadConfig() {
   const configPath = path.join(process.cwd(), 'blog-publish.config.json')
   if (!fs.existsSync(configPath)) {
@@ -39,6 +80,7 @@ async function verify(slug, baseUrl, locale) {
   const failures = []
 
   console.log(`Verifying: ${url}\n`)
+  if (!baseUrl.startsWith(LOCAL_BASE)) checkDeployedRevision()
 
   const browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
