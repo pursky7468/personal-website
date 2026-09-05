@@ -154,6 +154,26 @@ node scripts/verify-claims.js --file draft.md   # 草稿階段就能跑
 - 有無亂碼（`???`、方塊字、`â€` 等）
 - 標題層級是否正確，排版是否易讀
 
+### 驗證前必須先確認「驗的是哪一版」
+
+`verify-layout.js` 只看頁面結構,**對舊版一樣會全部 PASS**。這個坑踩過兩次:
+
+1. push 後 42 秒就驗（部署要 ~90 秒）→ 四項全 PASS,驗的是前一版
+2. push 後 8 分鐘,Vercel **完全沒有建立部署**（deployments API 回 0、
+   commit status `count=0`）→ 四項仍全 PASS,驗的還是前一版
+
+第二次證明「等久一點」不是解法:**部署根本沒發生時,等再久 PASS 也是假的。**
+
+現在 `verify-layout.js` 會先比對 GitHub deployments API 的最新 sha 與本地 HEAD,
+不符就直接 FAIL 並中止,不再往下驗一個來路不明的版本。（`--local` 模式跳過此檢查。）
+
+**部署沒觸發時的處置**:先確認遠端內容正確（`git show origin/master:<path>`),
+確認是 Vercel 端沒收到,再用空 commit 重推。本次重推後 36 秒完成。
+
+> **注意**:本機 `vercel` CLI 的 token 目前失效（`vercel ls` 回 "The specified
+> token is not valid"),所以無法用 `vercel deploy --prod` 手動補部署。
+> 要恢復需自行執行 `vercel login`。
+
 ### 常見問題
 
 | 症狀 | 原因 | 修法 |
