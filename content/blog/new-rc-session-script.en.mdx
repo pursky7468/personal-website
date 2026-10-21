@@ -1,0 +1,71 @@
+---
+title: "Starting a new Claude Code session from my phone"
+date: 2026-10-21
+tags: [Claude Code, Remote Control, PowerShell, Workflow, Tooling]
+summary: A ~25-line PowerShell script that makes every new Claude Code session start in Remote Control mode, so I can pick it up from my phone while away from the desk. Plus a PS 5.1 gotcha that silently drops arguments.
+draft: false
+---
+
+Claude Code has Remote Control (`/rc`): type `/rc` in a terminal session and you can continue that same session from the Claude app on your phone. Checking progress, answering a question, telling it to keep going — all from wherever you are.
+
+There's one catch: **someone has to type `/rc` at the computer.**
+
+Sessions that are already running are fine. The problem is when I'm out and want a **new** session for a different task. A new session opens in a terminal on my desktop, nobody is there to type `/rc`, and my phone can't reach it.
+
+## The fix: start new sessions already in /rc
+
+The `claude` CLI has a `--remote-control` flag that does the same thing as typing `/rc` after launch. The only missing piece was "open a new window and run that in a given directory." So I wrote `new-rc-session.ps1`. The core is a few lines:
+
+```powershell
+param(
+    [string]$Path = 'C:\GitSource',
+    [string]$Name = ''
+)
+
+# Always name the session so it can be closed by name later
+if (-not $Name) { $Name = 'rc-' + (Get-Date -Format 'yyyyMMdd-HHmmss') }
+
+# Build the command as one string: PS 5.1 silently drops empty native args
+$cmd = "claude --remote-control '" + ($Name -replace "'", "''") + "'"
+
+Start-Process powershell -WorkingDirectory $Path -ArgumentList '-NoExit', '-Command', $cmd
+```
+
+In practice the flow looks like this:
+
+1. On my phone, open a session that is **already in /rc mode**
+2. Tell it "open a new session in directory X"
+3. It runs the script on my computer → a new window pops up with Claude Code already in Remote Control mode
+4. A few seconds later the new session shows up in the phone app's list, and I tap into it
+
+In other words, **as long as one /rc session stays open on the computer, it's my doorway for starting new sessions from the phone.**
+
+## A gotcha: PowerShell 5.1 silently eats empty arguments
+
+The intuitive approach is to pass each argument separately to the external program. But when Windows PowerShell 5.1 calls a native exe, it **silently drops** empty-string arguments — no error, no warning — and `claude` ends up receiving different arguments than you think.
+
+The fix is to build the whole command as **a single string** before handing it to `-Command`, escaping any single quotes in the name. Failures that produce no error message, just a wrong result, are the hardest to track down, so I left a comment in the script for my future self.
+
+## Why every session gets a name
+
+If you don't pass a name, the script names the session something like `rc-20261021-143005`. The reason: **if you can open it, you need to be able to close it.**
+
+After opening a few sessions from the phone, several `claude.exe` processes pile up on the computer. An RC session started without a name doesn't expose its app display name locally — all you have is a PID and a start time, which makes it easy to close the wrong one.
+
+So it comes with a companion, `close-session.ps1`:
+
+- `-List` shows every local Claude Code session (PID, name, mode, status, start time)
+- `-Name` or `-Id` picks the one to close
+- Safety rules are hard-coded in the script: **never close the session running the script**, the target must be `claude.exe`, and a name must match **exactly one** session — otherwise nothing is closed
+
+When an AI is the one killing processes, I'd rather it refuse a few extra times than guess wrong once.
+
+## Wrap-up
+
+It's a small thing: one CLI flag, one new window, one auto-generated name. But it removes the "you have to be at the computer" constraint — as long as the computer is on and one /rc session is open, I can start a new line of work from anywhere.
+
+A few takeaways:
+
+- **Look for an existing flag first.** No need to simulate keystrokes to type `/rc`; the CLI already supports `--remote-control`.
+- **If you can open it, you must be able to close it.** The auto-naming exists for closing, not for looks.
+- **For destructive operations an AI will run, put the safety checks in the script**, not in a prompt you hope it follows.
