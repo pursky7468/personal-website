@@ -69,3 +69,21 @@ Start-Process powershell -WorkingDirectory $Path -ArgumentList '-NoExit', '-Comm
 - **先找現成參數。** 不需要模擬鍵盤去打 `/rc`，CLI 本來就支援 `--remote-control`。
 - **開得出來就要關得掉。** 自動命名是為了關閉而設計的，不是為了好看。
 - **給 AI 用的破壞性操作，安全檢查要寫在腳本裡**，而不是寫在提示詞裡期待它遵守。
+
+## 後記：官方其實有 server mode
+
+這篇有個前提我沒寫清楚：**第一個 /rc 對話還是得人在電腦前開。** 我不確定有沒有更有效率的做法，所以發文後回頭查了官方文件，結果真的有。
+
+[Remote Control 官方文件](https://code.claude.com/docs/en/remote-control)寫了 server mode：在電腦上跑 `claude remote-control`，它會常駐等待連線，**不需要先開一個互動對話**。文件把「從 Claude app 或 claude.ai/code 直接開新 session」寫成這個模式的正常用法，預設最多 32 個並行 session，還可以用 `--spawn worktree` 讓每個 session 各用一個 git worktree。我在本機（Claude Code 2.1.306）跑 `claude remote-control --help` 確認過，這些選項都在。
+
+要先說清楚：**從手機直接開新 session 這段，我還沒實測**，目前的依據只有文件。
+
+兩者的差別，依文件和我的腳本整理：
+
+| | 我的腳本 | 官方 server mode |
+|---|---|---|
+| 要先在電腦前開對話 | 要（第一個 /rc 對話） | 不用（但要先在電腦上把 server 跑起來） |
+| 新 session 的工作目錄 | 每次可以指定任意目錄 | 跟著 server 啟動的目錄（或它底下的 worktree） |
+| 同時開多個 | 每個都是獨立視窗、獨立 process | 一個 server 管多個 session |
+
+文件另外寫了幾個限制：第一次在某個目錄跑要互動確認 trust；斷線約 10 分鐘 server 會退出。這篇正文的三點心得，第一點「先找現成參數」反而在我自己身上應驗了：我找到了 `--remote-control`，卻沒往下多看一層。

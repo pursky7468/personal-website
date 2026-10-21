@@ -69,3 +69,21 @@ A few takeaways:
 - **Look for an existing flag first.** No need to simulate keystrokes to type `/rc`; the CLI already supports `--remote-control`.
 - **If you can open it, you must be able to close it.** The auto-naming exists for closing, not for looks.
 - **For destructive operations an AI will run, put the safety checks in the script**, not in a prompt you hope it follows.
+
+## Postscript: there's an official server mode
+
+There's a premise I didn't spell out above: **the first /rc session still has to be opened at the computer.** I wasn't sure whether there was a more efficient way, so after publishing I went back to the official docs. There is.
+
+The [Remote Control documentation](https://code.claude.com/docs/en/remote-control) describes a server mode: run `claude remote-control` on the computer and it stays up waiting for connections — **no interactive session needs to be opened first**. The docs present "start a new session directly from the Claude app or claude.ai/code" as the normal way to use it, with up to 32 concurrent sessions by default, and `--spawn worktree` to give each session its own git worktree. I confirmed these options exist by running `claude remote-control --help` locally (Claude Code 2.1.306).
+
+To be clear: **I haven't tested starting a new session from the phone in this mode yet** — for now the only source is the docs.
+
+How the two compare, based on the docs and my script:
+
+| | My script | Official server mode |
+|---|---|---|
+| Needs a session opened at the computer first | Yes (the first /rc session) | No (but the server must be started on the computer) |
+| Working directory of new sessions | Any directory, chosen each time | The server's directory (or worktrees under it) |
+| Multiple sessions | Each is its own window and process | One server manages many sessions |
+
+The docs also list a few limits: the first run in a directory requires an interactive trust prompt, and the server exits after roughly 10 minutes of disconnection. The first takeaway above — "look for an existing flag first" — turned out to apply to me: I found `--remote-control` but didn't look one level further.
