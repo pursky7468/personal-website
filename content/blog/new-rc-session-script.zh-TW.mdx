@@ -36,7 +36,7 @@ Start-Process powershell -WorkingDirectory $Path -ArgumentList '-NoExit', '-Comm
 1. 手機上打開某個**已經在 /rc 狀態**的對話
 2. 跟它說「開個新對話，目錄在 X」
 3. 它在電腦上跑這支腳本 → 跳出一個新視窗，裡面的 Claude Code 已經是 Remote Control 模式
-4. 幾秒後新對話出現在手機 app 的清單裡，直接點進去用
+4. 新對話註冊好後（要等幾秒）就會出現在手機 app 的清單裡，直接點進去用
 
 換句話說，**只要電腦上留著一個 /rc 對話，它就是我從手機開新對話的入口。**
 
@@ -48,9 +48,9 @@ Start-Process powershell -WorkingDirectory $Path -ArgumentList '-NoExit', '-Comm
 
 ## 為什麼一定要給名字
 
-腳本在你沒指定名稱時，會自動命名成 `rc-20261021-143005` 這種格式。原因是**開得出來，就要關得掉**。
+腳本在你沒指定名稱時，會自動命名成 `rc-20261021-143005` 這種格式。設計上的考量是：**開得出來，就要關得掉**。
 
-從手機開了幾個對話之後，電腦上會累積好幾個 `claude.exe`。不帶名稱啟動的 RC 對話，在本機查不到它在 app 上顯示的名字，只剩 PID 和啟動時間可以辨識——要關的時候很容易關錯。
+從手機開了幾個對話之後，電腦上會累積好幾個 `claude.exe`。我實測過，不帶名稱啟動的 RC 對話，在 `close-session.ps1` 的清單上名稱欄是空的，只能靠 PID 和啟動時間辨識——要關的時候很容易關錯。
 
 所以我配了另一支 `close-session.ps1`：
 

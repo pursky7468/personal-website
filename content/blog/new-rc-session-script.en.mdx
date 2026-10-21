@@ -36,7 +36,7 @@ In practice the flow looks like this:
 1. On my phone, open a session that is **already in /rc mode**
 2. Tell it "open a new session in directory X"
 3. It runs the script on my computer → a new window pops up with Claude Code already in Remote Control mode
-4. A few seconds later the new session shows up in the phone app's list, and I tap into it
+4. Once it registers (it takes a few seconds), the new session shows up in the phone app's list, and I tap into it
 
 In other words, **as long as one /rc session stays open on the computer, it's my doorway for starting new sessions from the phone.**
 
@@ -48,9 +48,9 @@ The fix is to build the whole command as **a single string** before handing it t
 
 ## Why every session gets a name
 
-If you don't pass a name, the script names the session something like `rc-20261021-143005`. The reason: **if you can open it, you need to be able to close it.**
+If you don't pass a name, the script names the session something like `rc-20261021-143005`. The design principle: **if you can open it, you need to be able to close it.**
 
-After opening a few sessions from the phone, several `claude.exe` processes pile up on the computer. An RC session started without a name doesn't expose its app display name locally — all you have is a PID and a start time, which makes it easy to close the wrong one.
+After opening a few sessions from the phone, several `claude.exe` processes pile up on the computer. In my testing, an RC session started without a name shows an empty name column in `close-session.ps1`'s list — you can only tell it apart by PID and start time, which makes it easy to close the wrong one.
 
 So it comes with a companion, `close-session.ps1`:
 
