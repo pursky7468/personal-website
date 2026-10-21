@@ -62,7 +62,7 @@ When an AI is the one killing processes, I'd rather it refuse a few extra times 
 
 ## Wrap-up
 
-It's a small thing: one CLI flag, one new window, one auto-generated name. But it removes the "you have to be at the computer" constraint — as long as the computer is on and one /rc session is open, I can start a new line of work from anywhere.
+It's a small thing: one CLI flag, one new window, one auto-generated name. But it removes the "you have to be at the computer for every new session" constraint — as long as the computer is on and one /rc session is open, I can start a new line of work from anywhere.
 
 A few takeaways:
 
@@ -74,7 +74,7 @@ A few takeaways:
 
 There's a premise I didn't spell out above: **the first /rc session still has to be opened at the computer.** I wasn't sure whether there was a more efficient way, so after publishing I went back to the official docs. There is.
 
-The [Remote Control documentation](https://code.claude.com/docs/en/remote-control) describes a server mode: run `claude remote-control` on the computer and it stays up waiting for connections — **no interactive session needs to be opened first**. The docs present "start a new session directly from the Claude app or claude.ai/code" as the normal way to use it, with up to 32 concurrent sessions by default, and `--spawn worktree` to give each session its own git worktree. I confirmed these options exist by running `claude remote-control --help` locally (Claude Code 2.1.306).
+The [Remote Control documentation](https://code.claude.com/docs/en/remote-control) describes a server mode: run `claude remote-control` on the computer and it stays up waiting for connections — **no interactive session needs to be opened first**. The docs say it accepts multiple concurrent on-demand sessions; my reading (an inference) is that you can start new sessions directly from the Claude app. It allows up to 32 concurrent sessions by default, and `--spawn worktree` to give each session its own git worktree. I confirmed these options exist by running `claude remote-control --help` locally (Claude Code 2.1.306).
 
 To be clear: **I haven't tested starting a new session from the phone in this mode yet** — for now the only source is the docs.
 
