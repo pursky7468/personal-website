@@ -82,7 +82,7 @@ Start-Process powershell -WorkingDirectory $Path -ArgumentList '-NoExit', '-Comm
 - 真正想測的是**從手機新開一個 session**。結果 app 要求電腦上也開著 **Claude desktop app**，而且會跳出資料夾選擇器，只能選事先允許的工作目錄。
 - server 本身也得有人先在電腦上啟動。所以「第一步得在電腦前做」這件事並沒有消失。
 
-回頭對照文件：[mobile 頁面](https://code.claude.com/docs/en/mobile)把 Remote Control（連到電腦上跑著的 Claude Code session）和 Dispatch（連到電腦上的 desktop app）列成兩種不同機制，並寫明本機 session 要「在電腦上用 `claude remote-control` 啟動，或在已開的 session 裡跑 `/remote-control`」。我推論手機新開 session 時走的其實是 desktop app 那條路，不是 server mode 本身；文件沒有明講我看到的是哪一條。至於 server mode 的 on-demand session，文件寫的工作目錄是 server 啟動的目錄（或它底下的 worktree），沒有寫可以從手機指定別的目錄。
+回頭對照文件：[mobile 頁面](https://code.claude.com/docs/en/mobile)把 Remote Control（連到電腦上跑著的 Claude Code session）和 Dispatch（連到電腦上的 desktop app）列成兩種不同機制，並寫明本機 session 要「在電腦上用 `claude remote-control` 啟動，或在已開的 session 裡跑 `/remote-control`」。我推論手機新開 session 時走的其實是 desktop app 那條路，不是 server mode 本身；文件沒有明講我看到的是哪一條。不過 remote-control 頁在說明 `--chrome` 時提到「你自己從 claude.ai/code 或 Claude app 開的 session」，暗示 server mode 也可能支援從 app 開 session——只是我實測時沒走到那條路。至於 server mode 的 on-demand session，文件寫的工作目錄是 server 啟動的目錄（或它底下的 worktree），沒有寫可以從手機指定別的目錄。
 
 | | 我的腳本 | 官方 server mode |
 |---|---|---|
@@ -91,4 +91,4 @@ Start-Process powershell -WorkingDirectory $Path -ArgumentList '-NoExit', '-Comm
 | 從手機新開 session | 請既有的 /rc 對話跑腳本 | 實測時 app 要求開著 desktop app，且只能選允許的目錄 |
 | 同時開多個 | 每個都是獨立視窗、獨立 process | 一個 server 管多個 session |
 
-**結論：我還是用自己的腳本。** server mode 適合固定在一個專案裡同時跑很多 session；我的需求是隨時換工作目錄，腳本反而更直接。正文的三點心得裡，「先找現成參數」這點這次也算用上了：找過、試過，確認現成的不合用，才留著自己的。
+**結論：我還是用自己的腳本。** 我的判斷是：server mode 比較適合固定在一個專案裡同時跑很多 session；我的需求是隨時換工作目錄，對我來說腳本反而更直接。正文的三點心得裡，「先找現成參數」這點這次也算用上了：找過、試過，確認現成的不合用，才留著自己的。
